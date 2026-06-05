@@ -99,6 +99,7 @@ import {
 import { getTelemetryClient } from "../telemetry.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { recoveryService } from "../services/recovery/service.js";
+import { goalExecutionService } from "../services/goal-execution.js";
 
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
@@ -1768,6 +1769,33 @@ export function agentRoutes(
         unresolvedBlockerIssueIds: dependencyReadiness.get(issue.id)?.unresolvedBlockerIssueIds ?? [],
       })),
     );
+  });
+
+  router.get("/agents/me/goals-review", async (req, res) => {
+    if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.companyId) {
+      res.status(401).json({ error: "Agent authentication required" });
+      return;
+    }
+
+    const agent = await svc.getById(req.actor.agentId);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    if (agent.companyId !== req.actor.companyId) {
+      res.status(403).json({ error: "Agent company mismatch" });
+      return;
+    }
+    if (agent.role !== "ceo") {
+      res.status(403).json({ error: "CEO goal review requires a CEO agent" });
+      return;
+    }
+
+    const review = await goalExecutionService(db).listReviewForAgent({
+      companyId: req.actor.companyId,
+      agentId: req.actor.agentId,
+    });
+    res.json(review);
   });
 
   router.get("/agents/me/inbox/mine", async (req, res) => {

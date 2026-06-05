@@ -27,7 +27,7 @@ import {
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
-import { logger } from "./middleware/logger.js";
+import { logger, shutdownOpenTelemetryLogs } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import {
   feedbackService,
@@ -937,6 +937,12 @@ export async function startServer(): Promise<StartedServer> {
         }
       }
 
+      try {
+        await shutdownOpenTelemetryLogs();
+      } catch (err) {
+        console.error("Failed to flush OpenTelemetry logs", err);
+      }
+
       process.exit(0);
     };
 
@@ -970,6 +976,6 @@ function isMainModule(metaUrl: string): boolean {
 if (isMainModule(import.meta.url)) {
   void startServer().catch((err) => {
     logger.error({ err }, "Paperclip server failed to start");
-    process.exit(1);
+    void shutdownOpenTelemetryLogs().finally(() => process.exit(1));
   });
 }

@@ -942,6 +942,14 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/agents/me/goals-review",
+  tags: ["agents"],
+  summary: "Get CEO goal review items for the current agent",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/agents/me/inbox/mine",
   tags: ["agents"],
   summary: "Get current agent assigned inbox items",

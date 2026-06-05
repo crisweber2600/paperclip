@@ -29,7 +29,23 @@ If `PAPERCLIP_APPROVAL_ID` is set:
 - If there is already an active run on an `in_progress` task, just move on to the next thing.
 - If `PAPERCLIP_TASK_ID` is set and assigned to you, prioritize that task.
 
-## 5. Checkout and Work
+## 5. Goal Review When No Assigned Work
+
+If there is no actionable assigned issue and no valid mention-handoff:
+
+1. `GET /api/agents/me/goals-review`.
+2. Review only the goals returned by this endpoint. Do not browse all unassigned work.
+3. For any active/planned goal with `recommendedAction: "needs_planning_issue"`, create a planning issue with `POST /api/companies/{companyId}/issues`:
+   - `goalId`: the reviewed goal id.
+   - `projectId`: the most appropriate linked project id when one is present.
+   - `title`: `Plan execution path for: {goal.title}`.
+   - `description`: include the goal description, ancestry, and the next concrete delegation/planning step.
+   - `status`: `todo`.
+   - Assign it to yourself first unless delegation is obvious.
+4. For `needs_unblock`, comment on the blocked execution path with the unblock owner and next action, or escalate to the board.
+5. For `needs_delegation`, assign or split the existing open issue instead of creating duplicate planning work.
+
+## 6. Checkout and Work
 
 - For scoped issue wakes, Paperclip may already checkout the current issue in the harness before your run starts.
 - Only call `POST /api/issues/{id}/checkout` yourself when you intentionally switch to a different task or the wake context did not already claim the issue.
@@ -45,7 +61,7 @@ Status quick guide:
 - `done`: finished.
 - `cancelled`: intentionally dropped.
 
-## 6. Delegation
+## 7. Delegation
 
 - Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. For non-child follow-ups that must stay on the same checkout/worktree, set `inheritExecutionWorkspaceFromIssueId` to the source issue.
 - When you know the needed work and owner, create those subtasks directly. When the board/user must choose from a proposed task tree, answer structured questions, or confirm a proposal before you can proceed, create an issue-thread interaction on the current issue with `POST /api/issues/{issueId}/interactions` using `kind: "suggest_tasks"`, `kind: "ask_user_questions"`, or `kind: "request_confirmation"` and `continuationPolicy: "wake_assignee"` when the answer should wake you.
@@ -54,17 +70,17 @@ Status quick guide:
 - Use `paperclip-create-agent` skill when hiring new agents.
 - Assign work to the right agent for the job.
 
-## 7. Fact Extraction
+## 8. Fact Extraction
 
 1. Check for new conversations since last extraction.
 2. Extract durable facts to the relevant entity in `$AGENT_HOME/life/` (PARA).
 3. Update `$AGENT_HOME/memory/YYYY-MM-DD.md` with timeline entries.
 4. Update access metadata (timestamp, access_count) for any referenced facts.
 
-## 8. Exit
+## 9. Exit
 
 - Comment on any in_progress work before exiting.
-- If no assignments and no valid mention-handoff, exit cleanly.
+- Exit cleanly only after confirming there are no actionable assigned issues, no valid mention-handoff, and no goal-review actions.
 
 ---
 
@@ -74,7 +90,7 @@ Status quick guide:
 - Hiring: Spin up new agents when capacity is needed.
 - Unblocking: Escalate or resolve blockers for reports.
 - Budget awareness: Above 80% spend, focus only on critical tasks.
-- Never look for unassigned work -- only work on what is assigned to you.
+- Never browse unassigned work as a queue. Goal review is the only no-assigned-work source.
 - Never cancel cross-team tasks -- reassign to the relevant manager with a comment.
 
 ## Rules

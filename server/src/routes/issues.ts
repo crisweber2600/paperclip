@@ -1892,7 +1892,9 @@ export function issueRoutes(
   }) {
     const projectPromise = issue.projectId ? projectsSvc.getById(issue.projectId) : Promise.resolve(null);
     const directGoalPromise = issue.goalId ? goalsSvc.getById(issue.goalId) : Promise.resolve(null);
-    const [project, directGoal] = await Promise.all([projectPromise, directGoalPromise]);
+    const [rawProject, rawDirectGoal] = await Promise.all([projectPromise, directGoalPromise]);
+    const project = rawProject?.companyId === issue.companyId ? rawProject : null;
+    const directGoal = rawDirectGoal?.companyId === issue.companyId ? rawDirectGoal : null;
 
     if (directGoal) {
       return { project, goal: directGoal };
@@ -1901,7 +1903,7 @@ export function issueRoutes(
     const projectGoalId = project?.goalId ?? project?.goalIds[0] ?? null;
     if (projectGoalId) {
       const projectGoal = await goalsSvc.getById(projectGoalId);
-      return { project, goal: projectGoal };
+      return { project, goal: projectGoal?.companyId === issue.companyId ? projectGoal : null };
     }
 
     if (!issue.projectId) {
@@ -1910,6 +1912,31 @@ export function issueRoutes(
     }
 
     return { project, goal: null };
+  }
+
+  async function serializeIssueGoalContext(companyId: string, goal: {
+    id: string;
+    title: string;
+    status: string;
+    level: string;
+    parentId: string | null;
+    description?: string | null;
+    ownerAgentId?: string | null;
+  } | null) {
+    if (!goal) return null;
+    const context = await goalsSvc.getContext(companyId, goal.id);
+    if (context) return context;
+    return {
+      id: goal.id,
+      title: goal.title,
+      status: goal.status,
+      level: goal.level,
+      parentId: goal.parentId,
+      description: goal.description ?? null,
+      ownerAgentId: goal.ownerAgentId ?? null,
+      ancestry: [],
+      childGoalCount: 0,
+    };
   }
 
   // Resolve issue identifiers (e.g. "PAP-39") to UUIDs for all /issues/:id routes
@@ -2245,6 +2272,7 @@ export function issueRoutes(
       actor: getActorInfo(req),
       activeRecoveryAction,
     });
+    const goalContext = await serializeIssueGoalContext(issue.companyId, goal);
 
     res.json({
       issue: {
@@ -2285,15 +2313,7 @@ export function issueRoutes(
             targetDate: project.targetDate,
           }
         : null,
-      goal: goal
-        ? {
-            id: goal.id,
-            title: goal.title,
-            status: goal.status,
-            level: goal.level,
-            parentId: goal.parentId,
-          }
-        : null,
+      goal: goalContext,
       commentCursor,
       wakeComment:
         wakeComment && wakeComment.issueId === issue.id
