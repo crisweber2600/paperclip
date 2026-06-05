@@ -24,6 +24,7 @@ const mockProjectService = vi.hoisted(() => ({
 
 const mockGoalService = vi.hoisted(() => ({
   getById: vi.fn(),
+  getContext: vi.fn(),
   getDefaultCompanyGoal: vi.fn(),
 }));
 
@@ -175,11 +176,11 @@ const projectGoal = {
   id: "44444444-4444-4444-8444-444444444444",
   companyId: "company-1",
   title: "Launch the company",
-  description: null,
+  description: "Move from seed plan to execution.",
   level: "company",
   status: "active",
   parentId: null,
-  ownerAgentId: null,
+  ownerAgentId: "33333333-3333-4333-8333-333333333333",
   createdAt: new Date("2026-03-20T00:00:00Z"),
   updatedAt: new Date("2026-03-20T00:00:00Z"),
 };
@@ -249,6 +250,31 @@ describe.sequential("issue goal context routes", () => {
     mockGoalService.getById.mockImplementation(async (id: string) =>
       id === projectGoal.id ? projectGoal : null,
     );
+    mockGoalService.getContext.mockImplementation(async (companyId: string, id: string) =>
+      companyId === "company-1" && id === projectGoal.id
+        ? {
+            id: projectGoal.id,
+            title: projectGoal.title,
+            description: projectGoal.description,
+            status: projectGoal.status,
+            level: projectGoal.level,
+            parentId: projectGoal.parentId,
+            ownerAgentId: projectGoal.ownerAgentId,
+            ancestry: [
+              {
+                id: projectGoal.id,
+                title: projectGoal.title,
+                description: projectGoal.description,
+                status: projectGoal.status,
+                level: projectGoal.level,
+                parentId: projectGoal.parentId,
+                ownerAgentId: projectGoal.ownerAgentId,
+              },
+            ],
+            childGoalCount: 0,
+          }
+        : null,
+    );
     mockGoalService.getDefaultCompanyGoal.mockResolvedValue(null);
   });
 
@@ -282,10 +308,147 @@ describe.sequential("issue goal context routes", () => {
       expect.objectContaining({
         id: projectGoal.id,
         title: projectGoal.title,
+        description: "Move from seed plan to execution.",
+        ownerAgentId: projectGoal.ownerAgentId,
+        ancestry: [
+          expect.objectContaining({
+            id: projectGoal.id,
+            title: projectGoal.title,
+          }),
+        ],
       }),
     );
     expect(mockGoalService.getDefaultCompanyGoal).not.toHaveBeenCalled();
     expect(res.body.attachments).toEqual([]);
+  });
+
+  it("surfaces direct issue goal details and ancestry from GET /issues/:id/heartbeat-context", async () => {
+    const directGoal = {
+      ...projectGoal,
+      id: "55555555-5555-4555-8555-555555555555",
+      title: "Deliver the launch milestone",
+      description: "Ship the milestone with enough context for the CEO.",
+      level: "agent",
+      parentId: projectGoal.id,
+    };
+    mockIssueService.getById.mockResolvedValue({
+      ...legacyProjectLinkedIssue,
+      projectId: null,
+      goalId: directGoal.id,
+    });
+    mockProjectService.getById.mockResolvedValue(null);
+    mockGoalService.getById.mockImplementation(async (id: string) => {
+      if (id === directGoal.id) return directGoal;
+      if (id === projectGoal.id) return projectGoal;
+      return null;
+    });
+    mockGoalService.getContext.mockImplementation(async (companyId: string, id: string) =>
+      companyId === "company-1" && id === directGoal.id
+        ? {
+            id: directGoal.id,
+            title: directGoal.title,
+            description: directGoal.description,
+            status: directGoal.status,
+            level: directGoal.level,
+            parentId: directGoal.parentId,
+            ownerAgentId: directGoal.ownerAgentId,
+            ancestry: [
+              {
+                id: projectGoal.id,
+                title: projectGoal.title,
+                description: projectGoal.description,
+                status: projectGoal.status,
+                level: projectGoal.level,
+                parentId: projectGoal.parentId,
+                ownerAgentId: projectGoal.ownerAgentId,
+              },
+              {
+                id: directGoal.id,
+                title: directGoal.title,
+                description: directGoal.description,
+                status: directGoal.status,
+                level: directGoal.level,
+                parentId: directGoal.parentId,
+                ownerAgentId: directGoal.ownerAgentId,
+              },
+            ],
+            childGoalCount: 0,
+          }
+        : null,
+    );
+
+    const res = await request(createApp()).get(
+      "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.issue.goalId).toBe(directGoal.id);
+    expect(res.body.goal).toEqual(expect.objectContaining({
+      id: directGoal.id,
+      description: "Ship the milestone with enough context for the CEO.",
+      ownerAgentId: projectGoal.ownerAgentId,
+      ancestry: [
+        expect.objectContaining({ id: projectGoal.id }),
+        expect.objectContaining({ id: directGoal.id }),
+      ],
+    }));
+    expect(mockGoalService.getDefaultCompanyGoal).not.toHaveBeenCalled();
+  });
+
+  it("surfaces the default company goal for unprojected issues in heartbeat context", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      ...legacyProjectLinkedIssue,
+      projectId: null,
+      goalId: null,
+    });
+    mockProjectService.getById.mockResolvedValue(null);
+    mockGoalService.getById.mockResolvedValue(null);
+    mockGoalService.getDefaultCompanyGoal.mockResolvedValue(projectGoal);
+
+    const res = await request(createApp()).get(
+      "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.issue.goalId).toBe(projectGoal.id);
+    expect(res.body.goal).toEqual(expect.objectContaining({
+      id: projectGoal.id,
+      description: "Move from seed plan to execution.",
+      ancestry: [
+        expect.objectContaining({ id: projectGoal.id }),
+      ],
+    }));
+    expect(mockGoalService.getDefaultCompanyGoal).toHaveBeenCalledWith("company-1");
+  });
+
+  it("does not leak cross-company direct goals through heartbeat context ancestry", async () => {
+    const foreignGoal = {
+      ...projectGoal,
+      id: "66666666-6666-4666-8666-666666666666",
+      companyId: "foreign-company",
+      title: "Foreign mission",
+    };
+    mockIssueService.getById.mockResolvedValue({
+      ...legacyProjectLinkedIssue,
+      projectId: null,
+      goalId: foreignGoal.id,
+    });
+    mockProjectService.getById.mockResolvedValue(null);
+    mockGoalService.getById.mockImplementation(async (id: string) =>
+      id === foreignGoal.id ? foreignGoal : null,
+    );
+    mockGoalService.getDefaultCompanyGoal.mockResolvedValue(projectGoal);
+
+    const res = await request(createApp()).get(
+      "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.issue.goalId).toBe(projectGoal.id);
+    expect(res.body.goal.id).toBe(projectGoal.id);
+    expect(JSON.stringify(res.body.goal)).not.toContain("Foreign mission");
+    expect(mockGoalService.getContext).toHaveBeenCalledWith("company-1", projectGoal.id);
+    expect(mockGoalService.getContext).not.toHaveBeenCalledWith("company-1", foreignGoal.id);
   });
 
   it("preserves direct continuation summary lookup in GET /issues/:id/heartbeat-context", async () => {

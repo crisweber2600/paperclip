@@ -4,6 +4,7 @@ import pino from "pino";
 import { pinoHttp } from "pino-http";
 import { readConfigFile } from "../config-file.js";
 import { resolveDefaultLogsDir, resolveHomeAwarePath } from "../home-paths.js";
+import { createOpenTelemetryLogStream, shutdownOpenTelemetryLogs } from "../observability/open-telemetry-logs.js";
 import { shouldSilenceHttpSuccessLog } from "./http-log-policy.js";
 
 function resolveServerLogDir(): string {
@@ -27,10 +28,7 @@ const sharedOpts = {
   singleLine: true,
 };
 
-export const logger = pino({
-  level: "debug",
-  redact: ["req.headers.authorization"],
-}, pino.transport({
+const prettyTransport = pino.transport({
   targets: [
     {
       target: "pino-pretty",
@@ -43,7 +41,21 @@ export const logger = pino({
       level: "debug",
     },
   ],
-}));
+});
+
+const otelLogStream = createOpenTelemetryLogStream();
+
+export const logger = pino({
+  level: "debug",
+  redact: ["req.headers.authorization"],
+}, otelLogStream
+  ? pino.multistream([
+    { stream: prettyTransport },
+    { level: "debug", stream: otelLogStream },
+  ])
+  : prettyTransport);
+
+export { shutdownOpenTelemetryLogs };
 
 export const httpLogger = pinoHttp({
   logger,

@@ -43,7 +43,26 @@ Results are sorted by priority. This is your inbox.
 - If `PAPERCLIP_TASK_ID` is set and assigned to you, prioritize it
 - If woken by a comment mention, read that comment thread first
 
-### Step 5: Checkout
+### Step 5: CEO Goal Review When No Work Is Assigned
+
+CEO agents have one additional no-assigned-work source:
+
+```
+GET /api/agents/me/goals-review
+```
+
+Only call this after confirming there is no actionable assigned issue and no valid mention handoff. Review only the returned goals; do not browse all unassigned work as a queue.
+
+For `recommendedAction: "needs_planning_issue"`, create a `todo` planning issue linked to the goal:
+
+```
+POST /api/companies/{companyId}/issues
+{ "title": "Plan execution path for: ...", "goalId": "...", "projectId": "...", "status": "todo", "assigneeAgentId": "..." }
+```
+
+Include the goal description and ancestry in the issue description. For `needs_unblock` or `needs_delegation`, update, comment, or delegate the existing execution issue instead of creating duplicate planning work.
+
+### Step 6: Checkout
 
 Before doing any work, you must checkout the task:
 
@@ -55,7 +74,7 @@ Headers: X-Paperclip-Run-Id: {runId}
 
 If already checked out by you, this succeeds. If another agent owns it: `409 Conflict` — stop and pick a different task. **Never retry a 409.**
 
-### Step 6: Understand Context
+### Step 7: Understand Context
 
 ```
 GET /api/issues/{issueId}
@@ -64,7 +83,7 @@ GET /api/issues/{issueId}/comments
 
 Read ancestors to understand why this task exists. If woken by a specific comment, find it and treat it as the immediate trigger.
 
-### Step 7: Do the Work
+### Step 8: Do the Work
 
 Use your tools and capabilities to complete the task. If the issue is actionable, take a concrete action in the same heartbeat. Do not stop at a plan unless the issue asked for planning.
 
@@ -72,7 +91,7 @@ Leave durable progress in comments, documents, or work products, and include the
 
 When the board/user must choose tasks, answer structured questions, or confirm a proposal before work can continue, create an issue-thread interaction with `POST /api/issues/{issueId}/interactions`. Use `request_confirmation` for explicit yes/no decisions instead of asking for them in markdown. For plan approval, update the `plan` document first, create a confirmation bound to the latest revision, and wait for acceptance before creating implementation subtasks.
 
-### Step 8: Update Status
+### Step 9: Update Status
 
 Always include the run ID header on state changes:
 
@@ -90,7 +109,7 @@ Headers: X-Paperclip-Run-Id: {runId}
 { "status": "blocked", "comment": "What is blocked, why, and who needs to unblock it." }
 ```
 
-### Step 9: Delegate if Needed
+### Step 10: Delegate if Needed
 
 Create subtasks for your reports:
 

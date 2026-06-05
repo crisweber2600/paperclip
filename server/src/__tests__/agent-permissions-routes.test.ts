@@ -83,6 +83,10 @@ const mockIssueService = vi.hoisted(() => ({
   list: vi.fn(),
 }));
 
+const mockGoalExecutionService = vi.hoisted(() => ({
+  listReviewForAgent: vi.fn(),
+}));
+
 const mockSecretService = vi.hoisted(() => ({
   normalizeAdapterConfigForPersistence: vi.fn(),
   resolveAdapterConfigForRuntime: vi.fn(),
@@ -159,6 +163,10 @@ function registerModuleMocks() {
     issueService: () => mockIssueService,
   }));
 
+  vi.doMock("../services/goal-execution.js", () => ({
+    goalExecutionService: () => mockGoalExecutionService,
+  }));
+
   vi.doMock("../services/secrets.js", () => ({
     secretService: () => mockSecretService,
   }));
@@ -193,6 +201,7 @@ function registerModuleMocks() {
     budgetService: () => mockBudgetService,
     heartbeatService: () => mockHeartbeatService,
     ISSUE_LIST_DEFAULT_LIMIT: 500,
+    goalExecutionService: () => mockGoalExecutionService,
     issueApprovalService: () => mockIssueApprovalService,
     issueService: () => mockIssueService,
     logActivity: mockLogActivity,
@@ -284,6 +293,7 @@ describe.sequential("agent permission routes", () => {
     vi.doUnmock("../services/instance-settings.js");
     vi.doUnmock("../services/issue-approvals.js");
     vi.doUnmock("../services/issues.js");
+    vi.doUnmock("../services/goal-execution.js");
     vi.doUnmock("../services/secrets.js");
     vi.doUnmock("../services/environments.js");
     vi.doUnmock("../services/workspace-operations.js");
@@ -318,6 +328,7 @@ describe.sequential("agent permission routes", () => {
     mockHeartbeatService.cancelRun.mockReset();
     mockIssueApprovalService.linkManyForApproval.mockReset();
     mockIssueService.list.mockReset();
+    mockGoalExecutionService.listReviewForAgent.mockReset();
     mockSecretService.normalizeAdapterConfigForPersistence.mockReset();
     mockSecretService.resolveAdapterConfigForRuntime.mockReset();
     mockAgentInstructionsService.materializeManagedBundle.mockReset();
@@ -392,6 +403,7 @@ describe.sequential("agent permission routes", () => {
       censorUsernameInLogs: false,
     });
     mockLogActivity.mockResolvedValue(undefined);
+    mockGoalExecutionService.listReviewForAgent.mockResolvedValue([]);
   });
 
   it("redacts agent detail for authenticated company members without agent admin permission", async () => {
@@ -1438,6 +1450,78 @@ describe.sequential("agent permission routes", () => {
       status: "backlog,todo,in_progress,in_review,blocked,done",
       limit: 500,
     });
+  });
+
+  it("returns CEO goal review items for the current CEO agent", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      role: "ceo",
+    });
+    mockGoalExecutionService.listReviewForAgent.mockResolvedValue([
+      {
+        id: "goal-1",
+        title: "Launch",
+        description: "Launch the company",
+        level: "company",
+        status: "active",
+        parentId: null,
+        ownerAgentId: agentId,
+        ancestry: [],
+        childGoalCount: 0,
+        linkedProjects: [],
+        openIssuesByStatus: {
+          backlog: 0,
+          todo: 0,
+          in_progress: 0,
+          in_review: 0,
+          done: 0,
+          blocked: 0,
+          cancelled: 0,
+        },
+        openIssues: [],
+        hasNonBlockedOpenIssue: false,
+        hasIssueAssignedToCurrentAgent: false,
+        recommendedAction: "needs_planning_issue",
+      },
+    ]);
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      runId: "run-1",
+      source: "agent_key",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get("/api/agents/me/goals-review"));
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([
+      expect.objectContaining({
+        id: "goal-1",
+        recommendedAction: "needs_planning_issue",
+      }),
+    ]);
+    expect(mockGoalExecutionService.listReviewForAgent).toHaveBeenCalledWith({
+      companyId,
+      agentId,
+    });
+  });
+
+  it("rejects non-CEO agents from CEO goal review", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      runId: "run-1",
+      source: "agent_key",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get("/api/agents/me/goals-review"));
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("CEO goal review");
+    expect(mockGoalExecutionService.listReviewForAgent).not.toHaveBeenCalled();
   });
 
   it("rejects heartbeat cancellation outside the caller company scope", async () => {
