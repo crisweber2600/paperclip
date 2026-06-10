@@ -2627,7 +2627,9 @@ export function issueRoutes(
         currentExecutionWorkspacePromise,
         recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id),
       ]);
-    const goalAncestors = goal ? await goalsSvc.getAncestors(goal.id) : [];
+    const goalAncestors = goal
+      ? await goalsSvc.getAncestorsFromParent(goal.companyId, goal.parentId, goal.id)
+      : [];
     const recoveryActionsByRelationIssue = await relationRecoveryActionMap(
       recoveryActionsSvc,
       issue.companyId,

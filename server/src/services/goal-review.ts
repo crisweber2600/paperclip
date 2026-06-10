@@ -99,6 +99,7 @@ export function goalReviewService(db: Db) {
         .where(
           and(
             eq(projectGoals.companyId, companyId),
+            eq(projects.companyId, companyId),
             inArray(projectGoals.goalId, goalIds),
             inArray(projects.status, OPEN_PROJECT_STATUSES),
           ),

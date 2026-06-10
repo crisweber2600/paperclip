@@ -8,6 +8,30 @@ type GoalReader = Pick<Db, "select">;
 // the cap only guards against pathological chains.
 export const MAX_GOAL_ANCESTOR_DEPTH = 8;
 
+async function walkGoalAncestors(
+  db: GoalReader,
+  input: {
+    companyId: string;
+    parentId: string | null;
+    visited: Set<string>;
+  },
+) {
+  const ancestors: (typeof goals.$inferSelect)[] = [];
+  let parentId = input.parentId;
+  while (parentId && !input.visited.has(parentId) && ancestors.length < MAX_GOAL_ANCESTOR_DEPTH) {
+    const parent = await db
+      .select()
+      .from(goals)
+      .where(and(eq(goals.companyId, input.companyId), eq(goals.id, parentId)))
+      .then((rows) => rows[0] ?? null);
+    if (!parent) break;
+    ancestors.push(parent);
+    input.visited.add(parent.id);
+    parentId = parent.parentId;
+  }
+  return ancestors;
+}
+
 export async function getGoalAncestors(db: GoalReader, goalId: string) {
   const goal = await db
     .select()
@@ -16,21 +40,26 @@ export async function getGoalAncestors(db: GoalReader, goalId: string) {
     .then((rows) => rows[0] ?? null);
   if (!goal) return [];
 
-  const ancestors: (typeof goals.$inferSelect)[] = [];
-  const visited = new Set<string>([goal.id]);
-  let parentId = goal.parentId;
-  while (parentId && !visited.has(parentId) && ancestors.length < MAX_GOAL_ANCESTOR_DEPTH) {
-    const parent = await db
-      .select()
-      .from(goals)
-      .where(eq(goals.id, parentId))
-      .then((rows) => rows[0] ?? null);
-    if (!parent) break;
-    ancestors.push(parent);
-    visited.add(parent.id);
-    parentId = parent.parentId;
-  }
-  return ancestors;
+  return walkGoalAncestors(db, {
+    companyId: goal.companyId,
+    parentId: goal.parentId,
+    visited: new Set<string>([goal.id]),
+  });
+}
+
+export function getGoalAncestorsFromParent(
+  db: GoalReader,
+  input: {
+    companyId: string;
+    parentId: string | null;
+    goalId?: string;
+  },
+) {
+  return walkGoalAncestors(db, {
+    companyId: input.companyId,
+    parentId: input.parentId,
+    visited: new Set<string>(input.goalId ? [input.goalId] : []),
+  });
 }
 
 export async function getDefaultCompanyGoal(db: GoalReader, companyId: string) {
@@ -85,6 +114,8 @@ export function goalService(db: Db) {
     getDefaultCompanyGoal: (companyId: string) => getDefaultCompanyGoal(db, companyId),
 
     getAncestors: (goalId: string) => getGoalAncestors(db, goalId),
+    getAncestorsFromParent: (companyId: string, parentId: string | null, goalId?: string) =>
+      getGoalAncestorsFromParent(db, { companyId, parentId, goalId }),
 
     listActiveOwnedByAgent: (
       companyId: string,

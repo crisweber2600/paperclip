@@ -26,6 +26,7 @@ const mockGoalService = vi.hoisted(() => ({
   getById: vi.fn(),
   getDefaultCompanyGoal: vi.fn(),
   getAncestors: vi.fn(),
+  getAncestorsFromParent: vi.fn(),
 }));
 
 const mockDocumentsService = vi.hoisted(() => ({
@@ -259,6 +260,7 @@ describe.sequential("issue goal context routes", () => {
     );
     mockGoalService.getDefaultCompanyGoal.mockResolvedValue(null);
     mockGoalService.getAncestors.mockResolvedValue([]);
+    mockGoalService.getAncestorsFromParent.mockResolvedValue([]);
   });
 
   it("surfaces the project goal from GET /issues/:id when the issue has no direct goal", async () => {
@@ -324,14 +326,18 @@ describe.sequential("issue goal context routes", () => {
           }
         : null,
     );
-    mockGoalService.getAncestors.mockResolvedValue([parentGoal]);
+    mockGoalService.getAncestorsFromParent.mockResolvedValue([parentGoal]);
 
     const res = await request(createApp()).get(
       "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
     );
 
     expect(res.status).toBe(200);
-    expect(mockGoalService.getAncestors).toHaveBeenCalledWith(projectGoal.id);
+    expect(mockGoalService.getAncestorsFromParent).toHaveBeenCalledWith(
+      projectGoal.companyId,
+      parentGoal.id,
+      projectGoal.id,
+    );
     expect(res.body.goal.description).toHaveLength(4_000);
     expect(res.body.goal.descriptionTruncated).toBe(true);
     expect(res.body.goal.ownerAgentId).toBe("33333333-3333-4333-8333-333333333333");
