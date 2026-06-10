@@ -1,5 +1,5 @@
 {
-  "id": "8dcb5a87-4f34-4296-9f94-524286ebdf1c",
+  "id": "2dd0146f-4431-4a57-a2b3-90b52957e903",
   "prevId": "8b20879c-4a71-4a03-adb8-d1567d5540a3",
   "version": "7",
   "dialect": "postgresql",
@@ -8575,56 +8575,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "acceptance_criteria": {
-          "name": "acceptance_criteria",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
-        "last_verdict": {
-          "name": "last_verdict",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "last_verdict_reason": {
-          "name": "last_verdict_reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "last_verdict_at": {
-          "name": "last_verdict_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "last_verdict_by_agent_id": {
-          "name": "last_verdict_by_agent_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "verdict_streak": {
-          "name": "verdict_streak",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "pause_reason": {
-          "name": "pause_reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "paused_at": {
-          "name": "paused_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -8690,19 +8640,6 @@
           "tableTo": "agents",
           "columnsFrom": [
             "owner_agent_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "goals_last_verdict_by_agent_id_agents_id_fk": {
-          "name": "goals_last_verdict_by_agent_id_agents_id_fk",
-          "tableFrom": "goals",
-          "tableTo": "agents",
-          "columnsFrom": [
-            "last_verdict_by_agent_id"
           ],
           "columnsTo": [
             "id"
@@ -10419,6 +10356,36 @@
           "primaryKey": false,
           "notNull": false
         },
+        "deleted_at": {
+          "name": "deleted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "deleted_by_type": {
+          "name": "deleted_by_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "deleted_by_agent_id": {
+          "name": "deleted_by_agent_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "deleted_by_user_id": {
+          "name": "deleted_by_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "deleted_by_run_id": {
+          "name": "deleted_by_run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -10588,6 +10555,32 @@
           "tableTo": "heartbeat_runs",
           "columnsFrom": [
             "created_by_run_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "issue_comments_deleted_by_agent_id_agents_id_fk": {
+          "name": "issue_comments_deleted_by_agent_id_agents_id_fk",
+          "tableFrom": "issue_comments",
+          "tableTo": "agents",
+          "columnsFrom": [
+            "deleted_by_agent_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "issue_comments_deleted_by_run_id_heartbeat_runs_id_fk": {
+          "name": "issue_comments_deleted_by_run_id_heartbeat_runs_id_fk",
+          "tableFrom": "issue_comments",
+          "tableTo": "heartbeat_runs",
+          "columnsFrom": [
+            "deleted_by_run_id"
           ],
           "columnsTo": [
             "id"
