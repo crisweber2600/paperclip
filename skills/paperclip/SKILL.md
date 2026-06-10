@@ -55,7 +55,14 @@ Overrides and special cases:
 - `PAPERCLIP_WAKE_REASON=issue_comment_mentioned` → read the comment thread first even if you're not the assignee. Self-assign (via checkout) only if the comment explicitly directs you to take the task. Otherwise respond in comments if useful and continue with your own assigned work; do not self-assign.
 - Wake payload says `dependency-blocked interaction: yes` → the issue is still blocked for deliverable work. Do not try to unblock it. Read the comment, name the unresolved blocker(s), and respond/triage via comments or documents. Use the scoped wake context rather than treating a checkout failure as a blocker.
 - **Blocked-task dedup:** before touching a `blocked` task, check the thread. If your most recent comment was a blocked-status update and no one has replied since, skip entirely — do not checkout, do not re-comment. Only re-engage on new context (comment, status change, event wake).
-- Nothing assigned and no valid mention handoff → exit the heartbeat.
+- Nothing assigned and no valid mention handoff → exit the heartbeat, **unless the wake payload flags a goal review as due** (see Step 4.5) — complete the goal review first, then exit.
+
+**Step 4.5 — Goal review (when due).** If the wake payload contains a "Goal review due" section (or a `goalReview` field), run this step even when you have no assignments:
+
+- `GET /api/agents/me/goal-review` (MCP tool: `paperclipGoalReview`). It returns the active goals you own — with goal description and ancestry — plus an `executionPath` summary and a `needsPlanning` flag per goal. Fetching it records that you performed the review.
+- For each goal with `needsPlanning: true`, create exactly one planning issue: `POST /api/companies/{companyId}/issues` with `goalId` set to that goal, `workMode: "planning"`, title `Plan: <goal title>`. Assign yourself or delegate to the right owner.
+- Trust `hasExecutionPath` — never create a planning issue for a goal that already has one, and never create more than one per goal per review.
+- This is not "looking for unassigned work": goals you own are standing assignments.
 
 **Step 5 — Checkout.** You MUST checkout before doing any work. Include the run ID header:
 
@@ -299,7 +306,7 @@ For commands, response fields, and MCP tools, read:
 ## Critical Rules
 
 - **Never retry a 409.** The task belongs to someone else.
-- **Never look for unassigned work.** No assignments = exit.
+- **Never look for unassigned work.** No assignments = exit. One exception: a flagged goal review (Step 4.5) — goals you own are standing assignments, so creating the planning path for an active goal with no open work is your job.
 - **Self-assign only for explicit @-mention handoff.** Requires a mention-triggered wake with `PAPERCLIP_WAKE_COMMENT_ID` and a comment that clearly directs you to do the task. Use checkout (never direct assignee patch).
 - **Honor "send it back to me" requests from board users.** If a board/user asks for review handoff (e.g. "let me review it", "assign it back to me"), reassign to them with `assigneeAgentId: null` and `assigneeUserId: "<requesting-user-id>"`, typically setting status to `in_review` instead of `done`. Resolve the user id from the triggering comment's `authorUserId` when available, else the issue's `createdByUserId` if it matches the requester context.
 - **Start actionable work before planning-only closure.** Do concrete work in the same heartbeat unless the task asks for a plan or review only.
@@ -400,6 +407,7 @@ If `plan` already exists, fetch the current document first and send its latest `
 | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | My identity                           | `GET /api/agents/me`                                                                                                            |
 | My compact inbox                      | `GET /api/agents/me/inbox-lite`                                                                                                 |
+| My goal review (owned goals)          | `GET /api/agents/me/goal-review`                                                                                                |
 | My assignments                        | `GET /api/companies/:companyId/issues?assigneeAgentId=:id&status=todo,in_progress,in_review,blocked`                            |
 | Checkout task                         | `POST /api/issues/:issueId/checkout`                                                                                            |
 | Get task + ancestors                  | `GET /api/issues/:issueId`                                                                                                      |

@@ -52,6 +52,22 @@ describe("paperclip MCP tools", () => {
     );
   });
 
+  it("fetches the goal review for the authenticated agent", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({ agentId: "agent-1", goals: [] }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipGoalReview");
+    const response = await tool.execute({});
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe("http://localhost:3100/api/agents/me/goal-review");
+    expect(init.method).toBe("GET");
+    expect(response.content[0]?.text).toContain("agent-1");
+  });
+
   it("uses default company id for company-scoped list tools", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       mockJsonResponse([{ id: "issue-1" }]),

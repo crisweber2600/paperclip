@@ -25,6 +25,8 @@ const mockProjectService = vi.hoisted(() => ({
 const mockGoalService = vi.hoisted(() => ({
   getById: vi.fn(),
   getDefaultCompanyGoal: vi.fn(),
+  getAncestors: vi.fn(),
+  getAncestorsFromParent: vi.fn(),
 }));
 
 const mockDocumentsService = vi.hoisted(() => ({
@@ -257,6 +259,8 @@ describe.sequential("issue goal context routes", () => {
       id === projectGoal.id ? projectGoal : null,
     );
     mockGoalService.getDefaultCompanyGoal.mockResolvedValue(null);
+    mockGoalService.getAncestors.mockResolvedValue([]);
+    mockGoalService.getAncestorsFromParent.mockResolvedValue([]);
   });
 
   it("surfaces the project goal from GET /issues/:id when the issue has no direct goal", async () => {
@@ -289,10 +293,63 @@ describe.sequential("issue goal context routes", () => {
       expect.objectContaining({
         id: projectGoal.id,
         title: projectGoal.title,
+        description: null,
+        descriptionTruncated: false,
+        ownerAgentId: null,
+        ancestors: [],
       }),
     );
     expect(mockGoalService.getDefaultCompanyGoal).not.toHaveBeenCalled();
     expect(res.body.attachments).toEqual([]);
+  });
+
+  it("includes the goal description and ancestor chain on GET /issues/:id/heartbeat-context", async () => {
+    const parentGoal = {
+      id: "66666666-6666-4666-8666-666666666666",
+      companyId: "company-1",
+      title: "Company mission",
+      description: "x".repeat(600),
+      level: "company",
+      status: "active",
+      parentId: null,
+      ownerAgentId: null,
+      createdAt: new Date("2026-03-19T00:00:00Z"),
+      updatedAt: new Date("2026-03-19T00:00:00Z"),
+    };
+    mockGoalService.getById.mockImplementation(async (id: string) =>
+      id === projectGoal.id
+        ? {
+            ...projectGoal,
+            description: "y".repeat(5_000),
+            ownerAgentId: "33333333-3333-4333-8333-333333333333",
+            parentId: parentGoal.id,
+          }
+        : null,
+    );
+    mockGoalService.getAncestorsFromParent.mockResolvedValue([parentGoal]);
+
+    const res = await request(createApp()).get(
+      "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockGoalService.getAncestorsFromParent).toHaveBeenCalledWith(
+      projectGoal.companyId,
+      parentGoal.id,
+      projectGoal.id,
+    );
+    expect(res.body.goal.description).toHaveLength(4_000);
+    expect(res.body.goal.descriptionTruncated).toBe(true);
+    expect(res.body.goal.ownerAgentId).toBe("33333333-3333-4333-8333-333333333333");
+    expect(res.body.goal.ancestors).toEqual([
+      expect.objectContaining({
+        id: parentGoal.id,
+        title: parentGoal.title,
+        level: "company",
+        status: "active",
+      }),
+    ]);
+    expect(res.body.goal.ancestors[0].description).toHaveLength(500);
   });
 
   it("preserves direct continuation summary lookup in GET /issues/:id/heartbeat-context", async () => {

@@ -138,6 +138,13 @@ import {
 } from "../services/trust-preset-resolver.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
+const HEARTBEAT_CONTEXT_GOAL_DESCRIPTION_MAX_CHARS = 4_000;
+const HEARTBEAT_CONTEXT_GOAL_ANCESTOR_DESCRIPTION_MAX_CHARS = 500;
+
+function truncateText(value: string | null | undefined, maxChars: number) {
+  if (!value) return value ?? null;
+  return value.length > maxChars ? value.slice(0, maxChars) : value;
+}
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
@@ -2620,6 +2627,9 @@ export function issueRoutes(
         currentExecutionWorkspacePromise,
         recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id),
       ]);
+    const goalAncestors = goal
+      ? await goalsSvc.getAncestorsFromParent(goal.companyId, goal.parentId, goal.id)
+      : [];
     const recoveryActionsByRelationIssue = await relationRecoveryActionMap(
       recoveryActionsSvc,
       issue.companyId,
@@ -2693,6 +2703,20 @@ export function issueRoutes(
             status: goal.status,
             level: goal.level,
             parentId: goal.parentId,
+            ownerAgentId: goal.ownerAgentId,
+            description: truncateText(goal.description, HEARTBEAT_CONTEXT_GOAL_DESCRIPTION_MAX_CHARS),
+            descriptionTruncated:
+              (goal.description?.length ?? 0) > HEARTBEAT_CONTEXT_GOAL_DESCRIPTION_MAX_CHARS,
+            ancestors: goalAncestors.map((ancestor) => ({
+              id: ancestor.id,
+              title: ancestor.title,
+              level: ancestor.level,
+              status: ancestor.status,
+              description: truncateText(
+                ancestor.description,
+                HEARTBEAT_CONTEXT_GOAL_ANCESTOR_DESCRIPTION_MAX_CHARS,
+              ),
+            })),
           }
         : null,
       commentCursor,

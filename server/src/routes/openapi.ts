@@ -1002,6 +1002,14 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/agents/me/goal-review",
+  tags: ["agents"],
+  summary: "Get current agent owned active goals with execution-path status (records a goal review)",
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/agents/me/inbox/mine",
   tags: ["agents"],
   summary: "Get current agent assigned inbox items",

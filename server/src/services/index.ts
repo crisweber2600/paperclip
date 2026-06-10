@@ -28,6 +28,12 @@ export { issueApprovalService } from "./issue-approvals.js";
 export { issueReferenceService } from "./issue-references.js";
 export { issueRecoveryActionService } from "./issue-recovery-actions.js";
 export { goalService } from "./goals.js";
+export {
+  goalReviewService,
+  getGoalReviewIntervalHours,
+  isGoalReviewDue,
+  parseGoalReviewRuntimeState,
+} from "./goal-review.js";
 export { activityService, type ActivityFilters } from "./activity.js";
 export { approvalService } from "./approvals.js";
 export { budgetService } from "./budgets.js";
