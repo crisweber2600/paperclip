@@ -1,9 +1,10 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useParams } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { goalsApi } from "../api/goals";
 import { projectsApi } from "../api/projects";
 import { assetsApi } from "../api/assets";
+import { budgetsApi } from "../api/budgets";
 import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
@@ -11,15 +12,79 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { GoalProperties } from "../components/GoalProperties";
 import { GoalTree } from "../components/GoalTree";
+import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
 import { StatusBadge } from "../components/StatusBadge";
 import { InlineEditor } from "../components/InlineEditor";
 import { EntityRow } from "../components/EntityRow";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { cn, projectUrl } from "../lib/utils";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Plus, SlidersHorizontal } from "lucide-react";
-import type { Goal, Project } from "@paperclipai/shared";
+import { Plus, SlidersHorizontal, X } from "lucide-react";
+import type { BudgetPolicySummary, Goal, Project } from "@paperclipai/shared";
+
+function AcceptanceCriteriaSection({
+  criteria,
+  onChange,
+}: {
+  criteria: string[];
+  onChange: (criteria: string[]) => void;
+}) {
+  const [draft, setDraft] = useState("");
+
+  const addCriterion = () => {
+    const value = draft.trim();
+    if (!value) return;
+    onChange([...criteria, value]);
+    setDraft("");
+  };
+
+  return (
+    <div className="space-y-2">
+      <h3 className="text-xs uppercase text-muted-foreground">Acceptance Criteria</h3>
+      {criteria.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No acceptance criteria.</p>
+      ) : (
+        <ul className="space-y-1">
+          {criteria.map((criterion, index) => (
+            <li
+              key={`${index}-${criterion}`}
+              className="flex items-start gap-2 text-sm group"
+            >
+              <span className="text-muted-foreground mt-0.5">•</span>
+              <span className="min-w-0 flex-1">{criterion}</span>
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                className="opacity-0 group-hover:opacity-100 shrink-0"
+                title="Remove criterion"
+                onClick={() => onChange(criteria.filter((_, i) => i !== index))}
+              >
+                <X className="h-3.5 w-3.5" />
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="flex items-center gap-2 max-w-md">
+        <Input
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") addCriterion();
+          }}
+          placeholder="Add a criterion..."
+          className="h-8 text-sm"
+        />
+        <Button size="sm" variant="outline" onClick={addCriterion} disabled={!draft.trim()}>
+          <Plus className="h-3.5 w-3.5 mr-1.5" />
+          Add
+        </Button>
+      </div>
+    </div>
+  );
+}
 
 interface GoalPropertiesToggleButtonProps {
   panelVisible: boolean;
@@ -108,6 +173,54 @@ export function GoalDetail() {
     }
   });
 
+  const { data: budgetOverview } = useQuery({
+    queryKey: queryKeys.budgets.overview(resolvedCompanyId!),
+    queryFn: () => budgetsApi.overview(resolvedCompanyId!),
+    enabled: !!resolvedCompanyId,
+  });
+
+  const goalBudgetSummary: BudgetPolicySummary | null = goal
+    ? budgetOverview?.policies.find(
+        (policy) => policy.scopeType === "goal" && policy.scopeId === goal.id,
+      ) ?? {
+        policyId: "",
+        companyId: resolvedCompanyId ?? "",
+        scopeType: "goal",
+        scopeId: goal.id,
+        scopeName: goal.title,
+        metric: "billed_cents",
+        windowKind: "lifetime",
+        amount: 0,
+        observedAmount: 0,
+        remainingAmount: 0,
+        utilizationPercent: 0,
+        warnPercent: 80,
+        hardStopEnabled: true,
+        notifyEnabled: true,
+        isActive: false,
+        status: "ok",
+        paused: Boolean(goal.pausedAt),
+        pauseReason: goal.pauseReason ?? null,
+        windowStart: new Date(),
+        windowEnd: new Date(),
+      }
+    : null;
+
+  const budgetMutation = useMutation({
+    mutationFn: (amount: number) =>
+      budgetsApi.upsertPolicy(resolvedCompanyId!, {
+        scopeType: "goal",
+        scopeId: goalId!,
+        amount,
+        windowKind: "lifetime",
+      }),
+    onSuccess: () => {
+      if (!resolvedCompanyId) return;
+      queryClient.invalidateQueries({ queryKey: queryKeys.budgets.overview(resolvedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.goals.detail(goalId!) });
+    },
+  });
+
   const childGoals = (allGoals ?? []).filter((g) => g.parentId === goalId);
   const linkedProjects = (allProjects ?? []).filter((p) => {
     if (!goalId) return false;
@@ -176,6 +289,11 @@ export function GoalDetail() {
         />
       </div>
 
+      <AcceptanceCriteriaSection
+        criteria={goal.acceptanceCriteria ?? []}
+        onChange={(acceptanceCriteria) => updateGoal.mutate({ acceptanceCriteria })}
+      />
+
       <Tabs defaultValue="children">
         <TabsList>
           <TabsTrigger value="children">
@@ -184,6 +302,7 @@ export function GoalDetail() {
           <TabsTrigger value="projects">
             Projects ({linkedProjects.length})
           </TabsTrigger>
+          <TabsTrigger value="budget">Budget</TabsTrigger>
         </TabsList>
 
         <TabsContent value="children" className="mt-4 space-y-3">
@@ -219,6 +338,21 @@ export function GoalDetail() {
                 />
               ))}
             </div>
+          )}
+        </TabsContent>
+
+        <TabsContent value="budget" className="mt-4">
+          {goalBudgetSummary ? (
+            <div className="max-w-3xl">
+              <BudgetPolicyCard
+                summary={goalBudgetSummary}
+                variant="plain"
+                isSaving={budgetMutation.isPending}
+                onSave={(amount) => budgetMutation.mutate(amount)}
+              />
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">No budget data.</p>
           )}
         </TabsContent>
       </Tabs>

@@ -151,6 +151,207 @@ describe("budgetService", () => {
     });
   });
 
+  it("creates a hard-stop incident and pauses a goal when spend exceeds a goal budget", async () => {
+    const policy = {
+      id: "policy-goal-1",
+      companyId: "company-1",
+      scopeType: "goal",
+      scopeId: "goal-1",
+      metric: "billed_cents",
+      windowKind: "lifetime",
+      amount: 100,
+      warnPercent: 80,
+      hardStopEnabled: true,
+      notifyEnabled: false,
+      isActive: true,
+    };
+
+    const dbStub = createDbStub([
+      [policy],
+      [{ total: 150 }],
+      [],
+      [{
+        companyId: "company-1",
+        name: "Ship V1",
+        pauseReason: null,
+        pausedAt: null,
+      }],
+    ]);
+
+    dbStub.queueInsert([{
+      id: "approval-1",
+      companyId: "company-1",
+      status: "pending",
+    }]);
+    dbStub.queueInsert([{
+      id: "incident-1",
+      companyId: "company-1",
+      policyId: "policy-goal-1",
+      approvalId: "approval-1",
+    }]);
+    dbStub.queueUpdate([]);
+    const cancelWorkForScope = vi.fn().mockResolvedValue(undefined);
+
+    const service = budgetService(dbStub.db as any, { cancelWorkForScope });
+    await service.evaluateCostEvent({
+      companyId: "company-1",
+      agentId: "agent-1",
+      projectId: null,
+      goalId: "goal-1",
+    } as any);
+
+    expect(dbStub.updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pauseReason: "budget",
+        pausedAt: expect.any(Date),
+      }),
+    );
+    expect(cancelWorkForScope).toHaveBeenCalledWith({
+      companyId: "company-1",
+      scopeType: "goal",
+      scopeId: "goal-1",
+    });
+  });
+
+  it("ignores goal policies when the cost event has no goalId", async () => {
+    const policy = {
+      id: "policy-goal-1",
+      companyId: "company-1",
+      scopeType: "goal",
+      scopeId: "goal-1",
+      metric: "billed_cents",
+      windowKind: "lifetime",
+      amount: 100,
+      warnPercent: 80,
+      hardStopEnabled: true,
+      notifyEnabled: true,
+      isActive: true,
+    };
+
+    const dbStub = createDbStub([[policy]]);
+    const cancelWorkForScope = vi.fn().mockResolvedValue(undefined);
+    const service = budgetService(dbStub.db as any, { cancelWorkForScope });
+    await service.evaluateCostEvent({
+      companyId: "company-1",
+      agentId: "agent-1",
+      projectId: null,
+      goalId: null,
+    } as any);
+
+    expect(dbStub.updateSet).not.toHaveBeenCalled();
+    expect(cancelWorkForScope).not.toHaveBeenCalled();
+  });
+
+  it("blocks new work for an issue whose goal hard-stop is exceeded, resolving goalId from the issue", async () => {
+    const goalPolicy = {
+      id: "policy-goal-1",
+      companyId: "company-1",
+      scopeType: "goal",
+      scopeId: "goal-1",
+      metric: "billed_cents",
+      windowKind: "lifetime",
+      amount: 100,
+      warnPercent: 80,
+      hardStopEnabled: true,
+      notifyEnabled: true,
+      isActive: true,
+    };
+
+    const dbStub = createDbStub([
+      [{
+        status: "running",
+        pauseReason: null,
+        companyId: "company-1",
+        name: "Budget Agent",
+      }],
+      [{
+        status: "active",
+        name: "Paperclip",
+      }],
+      [], // company policy
+      [], // agent policy
+      [{ goalId: "goal-1" }], // issue -> goalId
+      [{
+        id: "goal-1",
+        title: "Ship V1",
+        companyId: "company-1",
+        pauseReason: null,
+        pausedAt: null,
+      }],
+      [goalPolicy],
+      [{ total: 120 }],
+    ]);
+
+    const service = budgetService(dbStub.db as any);
+    const block = await service.getInvocationBlock("company-1", "agent-1", { issueId: "issue-1" });
+
+    expect(block).toEqual({
+      scopeType: "goal",
+      scopeId: "goal-1",
+      scopeName: "Ship V1",
+      reason: "Goal cannot start work because its budget hard-stop is still exceeded.",
+    });
+  });
+
+  it("blocks new work on issues under a budget-paused goal", async () => {
+    const dbStub = createDbStub([
+      [{
+        status: "running",
+        pauseReason: null,
+        companyId: "company-1",
+        name: "Budget Agent",
+      }],
+      [{
+        status: "active",
+        name: "Paperclip",
+      }],
+      [], // company policy
+      [], // agent policy
+      [{ goalId: "goal-1" }],
+      [{
+        id: "goal-1",
+        title: "Ship V1",
+        companyId: "company-1",
+        pauseReason: "budget",
+        pausedAt: new Date("2026-06-09T00:00:00Z"),
+      }],
+      [], // goal policy
+    ]);
+
+    const service = budgetService(dbStub.db as any);
+    const block = await service.getInvocationBlock("company-1", "agent-1", { issueId: "issue-1" });
+
+    expect(block).toEqual({
+      scopeType: "goal",
+      scopeId: "goal-1",
+      scopeName: "Ship V1",
+      reason: "Goal is paused because its budget hard-stop was reached.",
+    });
+  });
+
+  it("returns no block when the issue has no goal", async () => {
+    const dbStub = createDbStub([
+      [{
+        status: "running",
+        pauseReason: null,
+        companyId: "company-1",
+        name: "Budget Agent",
+      }],
+      [{
+        status: "active",
+        name: "Paperclip",
+      }],
+      [], // company policy
+      [], // agent policy
+      [{ goalId: null }],
+    ]);
+
+    const service = budgetService(dbStub.db as any);
+    const block = await service.getInvocationBlock("company-1", "agent-1", { issueId: "issue-1" });
+
+    expect(block).toBeNull();
+  });
+
   it("blocks new work when an agent hard-stop remains exceeded even if the agent is not paused yet", async () => {
     const agentPolicy = {
       id: "policy-agent-1",

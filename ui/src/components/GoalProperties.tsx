@@ -147,6 +147,32 @@ export function GoalProperties({ goal, onUpdate }: GoalPropertiesProps) {
             </Link>
           </PropertyRow>
         )}
+
+        {goal.lastVerdict && (
+          <PropertyRow label="Verdict">
+            <span
+              className="text-sm capitalize"
+              title={goal.lastVerdictReason ?? undefined}
+            >
+              {goal.lastVerdict}
+              {goal.verdictStreak > 1 ? ` ×${goal.verdictStreak}` : ""}
+            </span>
+            {goal.lastVerdictAt && (
+              <span className="text-xs text-muted-foreground">
+                {formatDate(goal.lastVerdictAt)}
+              </span>
+            )}
+          </PropertyRow>
+        )}
+
+        {goal.pausedAt && (
+          <PropertyRow label="Paused">
+            <span className="text-sm text-destructive">
+              {goal.pauseReason === "budget" ? "Budget hard-stop" : label(goal.pauseReason ?? "paused")}
+            </span>
+            <span className="text-xs text-muted-foreground">{formatDate(goal.pausedAt)}</span>
+          </PropertyRow>
+        )}
       </div>
 
       <Separator />

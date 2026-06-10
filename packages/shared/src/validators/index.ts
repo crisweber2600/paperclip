@@ -308,8 +308,10 @@ export {
 export {
   createGoalSchema,
   updateGoalSchema,
+  recordGoalVerdictsSchema,
   type CreateGoal,
   type UpdateGoal,
+  type RecordGoalVerdicts,
 } from "./goal.js";
 
 export {

@@ -949,6 +949,14 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "post",
+  path: "/api/agents/me/goal-review/verdicts",
+  tags: ["agents"],
+  summary: "Record goal-review verdicts for active goals owned by the current agent",
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
   method: "get",
   path: "/api/agents/me/inbox/mine",
   tags: ["agents"],

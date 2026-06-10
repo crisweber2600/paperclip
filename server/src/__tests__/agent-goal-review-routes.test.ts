@@ -23,6 +23,11 @@ const mockGoalReviewService = vi.hoisted(() => ({
   buildGoalReview: vi.fn(),
   getGoalReviewState: vi.fn(),
   stampGoalReviewState: vi.fn(),
+  listOwnedActiveGoals: vi.fn(),
+}));
+
+const mockGoalService = vi.hoisted(() => ({
+  recordVerdict: vi.fn(),
 }));
 
 const mockIssueService = vi.hoisted(() => ({
@@ -44,7 +49,13 @@ vi.mock("../services/index.js", () => ({
   companySkillService: () => ({}),
   budgetService: () => ({}),
   getGoalReviewIntervalHours: () => 4,
+  getGoalReviewMaxVerdictStreak: () => 6,
+  isAttentionGoal: (goal: { lastVerdict: string | null; verdictStreak: number }) =>
+    goal.lastVerdict !== null &&
+    ["stalled", "blocked"].includes(goal.lastVerdict) &&
+    goal.verdictStreak < 6,
   goalReviewService: () => mockGoalReviewService,
+  goalService: () => mockGoalService,
   heartbeatService: () => ({ wakeup: vi.fn(async () => undefined) }),
   ISSUE_LIST_DEFAULT_LIMIT: 200,
   issueApprovalService: () => ({}),
@@ -188,6 +199,121 @@ describe.sequential("agent goal review routes", () => {
     mockAgentService.getById.mockResolvedValue(null);
     const res = await request(createApp(agentActor())).get("/api/agents/me/goal-review");
     expect(res.status).toBe(404);
+  });
+
+  it("rejects verdicts for goals the agent does not own", async () => {
+    mockGoalReviewService.listOwnedActiveGoals.mockResolvedValue([
+      { id: reviewGoals[0].id, lastVerdict: null, verdictStreak: 0 },
+    ]);
+
+    const res = await request(createApp(agentActor()))
+      .post("/api/agents/me/goal-review/verdicts")
+      .send({
+        verdicts: [
+          { goalId: "99999999-9999-4999-8999-999999999999", verdict: "stalled", reason: "not mine" },
+        ],
+      });
+
+    expect(res.status).toBe(422);
+    expect(mockGoalService.recordVerdict).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid verdict values", async () => {
+    const res = await request(createApp(agentActor()))
+      .post("/api/agents/me/goal-review/verdicts")
+      .send({ verdicts: [{ goalId: reviewGoals[0].id, verdict: "meh", reason: "?" }] });
+
+    expect(res.status).toBe(400);
+    expect(mockGoalService.recordVerdict).not.toHaveBeenCalled();
+  });
+
+  it("records verdicts, logs activity, and stamps attention state", async () => {
+    const goalId = reviewGoals[0].id;
+    mockGoalReviewService.listOwnedActiveGoals
+      .mockResolvedValueOnce([{ id: goalId, lastVerdict: null, verdictStreak: 0 }])
+      .mockResolvedValueOnce([{ id: goalId, lastVerdict: "stalled", verdictStreak: 2 }]);
+    mockGoalService.recordVerdict.mockResolvedValue({
+      id: goalId,
+      verdictStreak: 2,
+    });
+
+    const res = await request(createApp(agentActor()))
+      .post("/api/agents/me/goal-review/verdicts")
+      .send({ verdicts: [{ goalId, verdict: "stalled", reason: "no recent movement" }] });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(
+      expect.objectContaining({
+        agentId: AGENT_ID,
+        recordedCount: 1,
+        attentionGoalCount: 1,
+        results: [
+          expect.objectContaining({ goalId, verdict: "stalled", verdictStreak: 2 }),
+        ],
+      }),
+    );
+    expect(mockGoalService.recordVerdict).toHaveBeenCalledWith(
+      goalId,
+      expect.objectContaining({
+        verdict: "stalled",
+        reason: "no recent movement",
+        byAgentId: AGENT_ID,
+      }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      mockDb,
+      expect.objectContaining({
+        action: "goal.verdict_recorded",
+        entityType: "goal",
+        entityId: goalId,
+        details: expect.objectContaining({
+          verdict: "stalled",
+          verdictStreak: 2,
+          source: "owner_review",
+        }),
+      }),
+    );
+    expect(mockLogActivity).not.toHaveBeenCalledWith(
+      mockDb,
+      expect.objectContaining({ action: "goal.review_attention_exhausted" }),
+    );
+    expect(mockGoalReviewService.stampGoalReviewState).toHaveBeenCalledWith(
+      mockAgent,
+      expect.objectContaining({
+        lastEvaluatedAt: expect.any(String),
+        attentionGoalCount: 1,
+      }),
+    );
+  });
+
+  it("logs attention exhaustion exactly at the streak cap", async () => {
+    const goalId = reviewGoals[0].id;
+    mockGoalReviewService.listOwnedActiveGoals
+      .mockResolvedValueOnce([{ id: goalId, lastVerdict: "stalled", verdictStreak: 5 }])
+      .mockResolvedValueOnce([{ id: goalId, lastVerdict: "stalled", verdictStreak: 6 }]);
+    mockGoalService.recordVerdict.mockResolvedValue({
+      id: goalId,
+      verdictStreak: 6,
+    });
+
+    const res = await request(createApp(agentActor()))
+      .post("/api/agents/me/goal-review/verdicts")
+      .send({ verdicts: [{ goalId, verdict: "stalled", reason: "still stuck" }] });
+
+    expect(res.status).toBe(200);
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      mockDb,
+      expect.objectContaining({
+        action: "goal.review_attention_exhausted",
+        entityId: goalId,
+        details: expect.objectContaining({ verdictStreak: 6, maxVerdictStreak: 6 }),
+      }),
+    );
+    // Exhausted goals no longer count toward attention.
+    expect(mockGoalReviewService.stampGoalReviewState).toHaveBeenCalledWith(
+      mockAgent,
+      expect.objectContaining({ attentionGoalCount: 0 }),
+    );
   });
 
   it("includes goal titles in inbox-lite items", async () => {

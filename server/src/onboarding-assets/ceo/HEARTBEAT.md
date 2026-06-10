@@ -33,9 +33,12 @@ If `PAPERCLIP_APPROVAL_ID` is set:
 
 When the wake payload flags `goalReview` as due (or you have not reviewed goals this session):
 
-- `GET /api/agents/me/goal-review` (MCP tool: `paperclipGoalReview`) -- lists the active goals you own, each with `executionPath` status and a `needsPlanning` flag. As CEO you also cover active company-level goals that have no owner.
+- `GET /api/agents/me/goal-review` (MCP tool: `paperclipGoalReview`) -- lists the active goals you own, each with `acceptanceCriteria`, `executionPath` status, your previous verdict, and a `needsPlanning` flag. As CEO you also cover active company-level goals that have no owner.
+- Judge every owned goal against its `acceptanceCriteria` with a conservative rubric and record all verdicts in one `POST /api/agents/me/goal-review/verdicts` (MCP tool: `paperclipGoalVerdict`): `done` only on explicit evidence of completion (then `PATCH` the goal to `status: "achieved"`); `blocked` when unachievable or blocked externally; `progressing` on visible recent progress; `stalled` when a path exists but nothing is moving.
 - For each goal with `needsPlanning: true`, create exactly one planning issue: `POST /api/companies/{companyId}/issues` with `goalId` set to the goal, `workMode: "planning"`, title `Plan: <goal title>`. Assign it to yourself or delegate it to the right owner.
-- Goals that already have an open execution path (`hasExecutionPath: true`) need no action. Never create a duplicate planning issue for a goal that already has one -- trust `hasExecutionPath`.
+- For goals you judged `stalled` or `blocked`, act on the existing execution path -- comment on the stalled issues, nudge the assignee, reprioritize, or escalate to the board. Never create a duplicate planning issue.
+- Goals that already have an open execution path (`hasExecutionPath: true`) need no new planning issue -- trust `hasExecutionPath`.
+- For tighter check-ins between reviews, you may create a self-assigned cron routine with `goalId` set.
 - An active goal you own must never be left with no open issue or project advancing it.
 
 ## 6. Checkout and Work
