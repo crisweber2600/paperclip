@@ -101,6 +101,7 @@ import {
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
+import { goalReviewService, isGoalReviewDue, parseGoalReviewRuntimeState } from "./goal-review.js";
 import {
   buildIssueMonitorClearedPatch,
   buildIssueMonitorTriggeredPatch,
@@ -2037,6 +2038,7 @@ async function buildPaperclipWakePayload(input: {
     | null;
 }) {
   const executionStage = parseObject(input.contextSnapshot.executionStage);
+  const goalReview = parseObject(input.contextSnapshot.paperclipGoalReview);
   const commentIds = extractWakeCommentIds(input.contextSnapshot);
   const annotationCommentId = readNonEmptyString(input.contextSnapshot.annotationCommentId);
   const issueId = readNonEmptyString(input.contextSnapshot.issueId);
@@ -2057,7 +2059,14 @@ async function buildPaperclipWakePayload(input: {
           .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)))
           .then((rows) => rows[0] ?? null)
       : null);
-  if (commentIds.length === 0 && Object.keys(executionStage).length === 0 && !issueSummary) return null;
+  if (
+    commentIds.length === 0 &&
+    Object.keys(executionStage).length === 0 &&
+    !issueSummary &&
+    Object.keys(goalReview).length === 0
+  ) {
+    return null;
+  }
 
   const commentRows =
     commentIds.length === 0
@@ -2222,6 +2231,7 @@ async function buildPaperclipWakePayload(input: {
       ? input.contextSnapshot.unresolvedBlockerSummaries
       : [],
     executionStage: Object.keys(executionStage).length > 0 ? executionStage : null,
+    goalReview: Object.keys(goalReview).length > 0 ? goalReview : null,
     continuationSummary: continuationSummary
       ? {
           key: continuationSummary.key,
@@ -3967,6 +3977,55 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       throw new Error(`Failed to ensure runtime state for agent ${agent.id}`);
     }
     return ensured;
+  }
+
+  // Computes the goal-review wake context for an agent that owns active goals
+  // (the CEO also covers unowned company-level goals). Throttled via
+  // agent_runtime_state.stateJson.goalReview so the queries run at most once
+  // per review interval, not on every scheduler tick. Never throws: goal
+  // review must not break run execution.
+  async function resolveGoalReviewWakeContext(input: {
+    agent: typeof agents.$inferSelect;
+    runtimeStateJson: unknown;
+    runId: string;
+    skip: boolean;
+  }) {
+    if (input.skip) return null;
+    try {
+      const state = parseGoalReviewRuntimeState(input.runtimeStateJson);
+      const now = new Date();
+      if (!isGoalReviewDue({ state, now })) return null;
+      const reviewSvc = goalReviewService(db);
+      const summary = await reviewSvc.buildGoalReviewWakeSummary(input.agent);
+      // Stamp even when the agent owns no goals so the ownership query itself
+      // is throttled to once per interval.
+      await reviewSvc.stampGoalReviewState(input.agent, {
+        lastEvaluatedAt: now.toISOString(),
+        ...(summary ? { lastSurfacedAt: now.toISOString() } : {}),
+      });
+      if (!summary) return null;
+      await logActivity(db, {
+        companyId: input.agent.companyId,
+        actorType: "system",
+        actorId: "heartbeat_scheduler",
+        action: "agent.goal_review_surfaced",
+        entityType: "agent",
+        entityId: input.agent.id,
+        agentId: input.agent.id,
+        runId: input.runId,
+        details: {
+          ownedActiveGoalCount: summary.ownedActiveGoalCount,
+          goalsWithoutExecutionPathIds: summary.goalsWithoutExecutionPath.map((goal) => goal.id),
+        },
+      });
+      return summary;
+    } catch (error) {
+      logger.warn(
+        { err: error, agentId: input.agent.id, runId: input.runId },
+        "failed to resolve goal review wake context",
+      );
+      return null;
+    }
   }
 
   async function setRunStatus(
@@ -7219,6 +7278,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     } else {
       delete context.paperclipContinuationSummary;
+    }
+    const goalReviewWakeContext = await resolveGoalReviewWakeContext({
+      agent,
+      runtimeStateJson: runtime.stateJson,
+      runId: run.id,
+      // Comment-scoped wakes are issue-scoped by contract; goal review rides
+      // on timer/assignment wakes instead.
+      skip: Boolean(wakeCommentContext),
+    });
+    if (goalReviewWakeContext) {
+      context.paperclipGoalReview = goalReviewWakeContext;
+    } else {
+      delete context.paperclipGoalReview;
     }
     const paperclipWakePayload = await buildPaperclipWakePayload({
       db,

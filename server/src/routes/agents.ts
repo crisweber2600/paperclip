@@ -2,7 +2,7 @@ import { Router, type Request, type Response } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
-import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable } from "@paperclipai/db";
+import { agents as agentsTable, companies, goals as goalsTable, heartbeatRuns, issues as issuesTable } from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
   agentSkillSyncSchema,
@@ -39,6 +39,8 @@ import {
   approvalService,
   companySkillService,
   budgetService,
+  getGoalReviewIntervalHours,
+  goalReviewService,
   heartbeatService,
   ISSUE_LIST_DEFAULT_LIMIT,
   issueApprovalService,
@@ -1745,10 +1747,18 @@ export function agentRoutes(
       limit: ISSUE_LIST_DEFAULT_LIMIT,
     });
     const issueIds = rows.map((issue) => issue.id);
-    const [dependencyReadiness, recoveryActionByIssue] = await Promise.all([
+    const goalIds = [...new Set(rows.map((issue) => issue.goalId).filter((id): id is string => Boolean(id)))];
+    const [dependencyReadiness, recoveryActionByIssue, goalRows] = await Promise.all([
       issuesSvc.listDependencyReadiness(req.actor.companyId, issueIds),
       recoveryActionsSvc.listActiveForIssues(req.actor.companyId, issueIds),
+      goalIds.length > 0
+        ? db
+            .select({ id: goalsTable.id, title: goalsTable.title })
+            .from(goalsTable)
+            .where(inArray(goalsTable.id, goalIds))
+        : Promise.resolve([]),
     ]);
+    const goalTitleById = new Map(goalRows.map((goal) => [goal.id, goal.title]));
 
     res.json(
       rows.map((issue) => ({
@@ -1759,6 +1769,7 @@ export function agentRoutes(
         priority: issue.priority,
         projectId: issue.projectId,
         goalId: issue.goalId,
+        goalTitle: issue.goalId ? goalTitleById.get(issue.goalId) ?? null : null,
         parentId: issue.parentId,
         updatedAt: issue.updatedAt,
         activeRun: issue.activeRun,
@@ -1768,6 +1779,51 @@ export function agentRoutes(
         unresolvedBlockerIssueIds: dependencyReadiness.get(issue.id)?.unresolvedBlockerIssueIds ?? [],
       })),
     );
+  });
+
+  // Goal-review surface for the heartbeat goal-review step: the agent's owned
+  // active goals (CEO additionally covers unowned company-level goals) with
+  // execution-path status. Fetching this counts as performing the review.
+  router.get("/agents/me/goal-review", async (req, res) => {
+    if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.companyId) {
+      res.status(401).json({ error: "Agent authentication required" });
+      return;
+    }
+    const agent = await svc.getById(req.actor.agentId);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+
+    const reviewSvc = goalReviewService(db);
+    const now = new Date();
+    const [reviewGoals, priorState] = await Promise.all([
+      reviewSvc.buildGoalReview(agent),
+      reviewSvc.getGoalReviewState(agent.id),
+    ]);
+    await reviewSvc.stampGoalReviewState(agent, { lastCheckedAt: now.toISOString() });
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: "agent",
+      actorId: agent.id,
+      agentId: agent.id,
+      action: "agent.goal_review_checked",
+      entityType: "agent",
+      entityId: agent.id,
+      details: {
+        goalCount: reviewGoals.length,
+        needsPlanningGoalIds: reviewGoals.filter((goal) => goal.needsPlanning).map((goal) => goal.id),
+      },
+    });
+
+    res.json({
+      agentId: agent.id,
+      companyId: agent.companyId,
+      generatedAt: now.toISOString(),
+      intervalHours: getGoalReviewIntervalHours(),
+      lastReviewedAt: priorState.lastCheckedAt ?? null,
+      goals: reviewGoals,
+    });
   });
 
   router.get("/agents/me/inbox/mine", async (req, res) => {

@@ -417,6 +417,18 @@ type PaperclipWakeTreeHoldSummary = {
   reason: string | null;
 };
 
+type PaperclipWakeGoalReviewGoalRef = {
+  id: string | null;
+  title: string | null;
+};
+
+type PaperclipWakeGoalReview = {
+  due: boolean;
+  ownedActiveGoalCount: number;
+  goalsWithoutExecutionPathCount: number;
+  goalsWithoutExecutionPath: PaperclipWakeGoalReviewGoalRef[];
+};
+
 type PaperclipWakePayload = {
   reason: string | null;
   issue: PaperclipWakeIssue | null;
@@ -427,6 +439,7 @@ type PaperclipWakePayload = {
   unresolvedBlockerIssueIds: string[];
   unresolvedBlockerSummaries: PaperclipWakeBlockerSummary[];
   executionStage: PaperclipWakeExecutionStage | null;
+  goalReview: PaperclipWakeGoalReview | null;
   continuationSummary: PaperclipWakeContinuationSummary | null;
   livenessContinuation: PaperclipWakeLivenessContinuation | null;
   interactionKind: string | null;
@@ -591,6 +604,31 @@ function normalizePaperclipWakeExecutionStage(value: unknown): PaperclipWakeExec
   };
 }
 
+function normalizePaperclipWakeGoalReview(value: unknown): PaperclipWakeGoalReview | null {
+  const review = parseObject(value);
+  if (review.due !== true) return null;
+  const goalsWithoutExecutionPath = Array.isArray(review.goalsWithoutExecutionPath)
+    ? review.goalsWithoutExecutionPath
+        .map((entry) => {
+          const goal = parseObject(entry);
+          const id = asString(goal.id, "").trim() || null;
+          const title = asString(goal.title, "").trim() || null;
+          if (!id && !title) return null;
+          return { id, title };
+        })
+        .filter((entry): entry is PaperclipWakeGoalReviewGoalRef => Boolean(entry))
+    : [];
+  return {
+    due: true,
+    ownedActiveGoalCount: asNumber(review.ownedActiveGoalCount, 0),
+    goalsWithoutExecutionPathCount: asNumber(
+      review.goalsWithoutExecutionPathCount,
+      goalsWithoutExecutionPath.length,
+    ),
+    goalsWithoutExecutionPath,
+  };
+}
+
 export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayload | null {
   const payload = parseObject(value);
   const comments = Array.isArray(payload.comments)
@@ -624,7 +662,8 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     : [];
 
   const activeTreeHold = normalizePaperclipWakeTreeHoldSummary(payload.activeTreeHold);
-  if (comments.length === 0 && commentIds.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !livenessContinuation && !normalizePaperclipWakeIssue(payload.issue)) {
+  const goalReview = normalizePaperclipWakeGoalReview(payload.goalReview);
+  if (comments.length === 0 && commentIds.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !goalReview && !continuationSummary && !livenessContinuation && !normalizePaperclipWakeIssue(payload.issue)) {
     return null;
   }
 
@@ -638,6 +677,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     unresolvedBlockerIssueIds,
     unresolvedBlockerSummaries,
     executionStage,
+    goalReview,
     continuationSummary,
     livenessContinuation,
     interactionKind: asString(payload.interactionKind, "").trim() || null,
@@ -684,7 +724,26 @@ export function renderPaperclipWakePrompt(
     return principal.userId ? `user ${principal.userId}` : "user";
   };
 
-  const lines = resumedSession
+  // A wake whose only content is a goal review has no issue in scope; the
+  // issue-scoped boilerplate below would be misleading.
+  const goalReviewOnly =
+    Boolean(normalized.goalReview) &&
+    !normalized.issue &&
+    normalized.comments.length === 0 &&
+    normalized.commentIds.length === 0 &&
+    !executionStage;
+
+  const lines = goalReviewOnly
+    ? [
+        "## Paperclip Wake Payload",
+        "",
+        "Treat this wake payload as the highest-priority input for the current heartbeat.",
+        "This heartbeat carries a goal review; no single issue is in scope.",
+        "Follow your normal heartbeat procedure for assigned work, and complete the goal review described below before exiting.",
+        "",
+        `- reason: ${normalized.reason ?? "unknown"}`,
+      ]
+    : resumedSession
       ? [
         "## Paperclip Resume Delta",
         "",
@@ -808,6 +867,24 @@ export function renderPaperclipWakePrompt(
         "",
       );
     }
+  }
+
+  if (normalized.goalReview) {
+    const review = normalized.goalReview;
+    lines.push(
+      "",
+      "Goal review due:",
+      `- owned active goals: ${review.ownedActiveGoalCount}`,
+      `- goals with no open execution path: ${review.goalsWithoutExecutionPathCount}`,
+    );
+    for (const goal of review.goalsWithoutExecutionPath) {
+      lines.push(`  - ${goal.id ?? "unknown"}${goal.title ? ` ${goal.title}` : ""}`);
+    }
+    lines.push(
+      "Before exiting this heartbeat, call GET /api/agents/me/goal-review (MCP tool: paperclipGoalReview) to review the goals you own.",
+      'For each goal flagged `needsPlanning: true`, create exactly one goal-linked planning issue (workMode "planning", goalId set, title "Plan: <goal title>") and assign it to yourself or delegate it to the right owner.',
+      "Goals that already have an open execution path need no action; never create a duplicate planning issue for a goal that already has one.",
+    );
   }
 
   if (normalized.continuationSummary) {

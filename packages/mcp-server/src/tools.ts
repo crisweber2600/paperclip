@@ -236,6 +236,12 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       async () => client.requestJson("GET", "/agents/me/inbox-lite"),
     ),
     makeTool(
+      "paperclipGoalReview",
+      "Get the authenticated agent's owned active goals with execution-path status for the heartbeat goal-review step",
+      z.object({}),
+      async () => client.requestJson("GET", "/agents/me/goal-review"),
+    ),
+    makeTool(
       "paperclipListAgents",
       "List agents in a company",
       z.object({ companyId: companyIdOptional }),

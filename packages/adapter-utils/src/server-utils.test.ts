@@ -619,6 +619,75 @@ describe("renderPaperclipWakePrompt", () => {
     );
   });
 
+  it("keeps a payload whose only content is a goal review and renders the issue-less variant", () => {
+    const payload = {
+      reason: "heartbeat_timer",
+      goalReview: {
+        due: true,
+        ownedActiveGoalCount: 3,
+        goalsWithoutExecutionPathCount: 2,
+        goalsWithoutExecutionPath: [
+          { id: "goal-1", title: "Ship V1" },
+          { id: "goal-2", title: "Grow revenue" },
+        ],
+      },
+    };
+
+    const serialized = stringifyPaperclipWakePayload(payload);
+    expect(serialized).not.toBeNull();
+    expect(JSON.parse(serialized ?? "{}")).toMatchObject({
+      goalReview: {
+        due: true,
+        ownedActiveGoalCount: 3,
+        goalsWithoutExecutionPathCount: 2,
+      },
+    });
+
+    const prompt = renderPaperclipWakePrompt(payload);
+    expect(prompt).toContain("## Paperclip Wake Payload");
+    expect(prompt).toContain("This heartbeat carries a goal review; no single issue is in scope.");
+    expect(prompt).not.toContain("scoped to the issue below");
+    expect(prompt).toContain("Goal review due:");
+    expect(prompt).toContain("- owned active goals: 3");
+    expect(prompt).toContain("- goals with no open execution path: 2");
+    expect(prompt).toContain("goal-1 Ship V1");
+    expect(prompt).toContain("GET /api/agents/me/goal-review");
+    expect(prompt).toContain("`needsPlanning: true`");
+  });
+
+  it("appends the goal review section to issue-scoped wake prompts", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1580",
+        title: "Update prompts",
+        status: "in_progress",
+      },
+      goalReview: {
+        due: true,
+        ownedActiveGoalCount: 1,
+        goalsWithoutExecutionPathCount: 1,
+        goalsWithoutExecutionPath: [{ id: "goal-1", title: "Ship V1" }],
+      },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("This heartbeat is scoped to the issue below.");
+    expect(prompt).toContain("Goal review due:");
+    expect(prompt).toContain("GET /api/agents/me/goal-review");
+  });
+
+  it("drops a goal review that is not due", () => {
+    const serialized = stringifyPaperclipWakePayload({
+      reason: "heartbeat_timer",
+      goalReview: { due: false, ownedActiveGoalCount: 2 },
+    });
+    expect(serialized).toBeNull();
+  });
+
   it("adds the execution contract to scoped wake prompts", () => {
     const prompt = renderPaperclipWakePrompt({
       reason: "issue_assigned",
