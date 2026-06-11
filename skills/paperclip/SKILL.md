@@ -59,9 +59,16 @@ Overrides and special cases:
 
 **Step 4.5 — Goal review (when due).** If the wake payload contains a "Goal review due" section (or a `goalReview` field), run this step even when you have no assignments:
 
-- `GET /api/agents/me/goal-review` (MCP tool: `paperclipGoalReview`). It returns the active goals you own — with goal description and ancestry — plus an `executionPath` summary and a `needsPlanning` flag per goal. Fetching it records that you performed the review.
+- `GET /api/agents/me/goal-review` (MCP tool: `paperclipGoalReview`). It returns the active goals you own — with goal description, ancestry, and `acceptanceCriteria` — plus an `executionPath` summary, your previous verdict, and a `needsPlanning` flag per goal. Fetching it records that you performed the review.
+- **Judge every owned goal** against its `acceptanceCriteria` with a conservative rubric, then record ALL verdicts in one call: `POST /api/agents/me/goal-review/verdicts` (MCP tool: `paperclipGoalVerdict`):
+  - `done` — only on explicit evidence that the goal is complete or its deliverable exists. Follow up with `PATCH /api/goals/{goalId}` setting `status: "achieved"`.
+  - `blocked` — the goal is unachievable or blocked on something outside your control; say what.
+  - `progressing` — visible recent progress on the goal's open issues/projects.
+  - `stalled` — an execution path exists but nothing is moving.
 - For each goal with `needsPlanning: true`, create exactly one planning issue: `POST /api/companies/{companyId}/issues` with `goalId` set to that goal, `workMode: "planning"`, title `Plan: <goal title>`. Assign yourself or delegate to the right owner.
+- For goals you judged `stalled` or `blocked`, act on the existing execution path — comment on the stalled issues, nudge the assignee, reprioritize, or escalate to the board. Never create a duplicate planning issue.
 - Trust `hasExecutionPath` — never create a planning issue for a goal that already has one, and never create more than one per goal per review.
+- For tighter check-ins between reviews, you may create a self-assigned cron routine with `goalId` set (`POST /api/companies/{companyId}/routines`).
 - This is not "looking for unassigned work": goals you own are standing assignments.
 
 **Step 5 — Checkout.** You MUST checkout before doing any work. Include the run ID header:
@@ -408,6 +415,7 @@ If `plan` already exists, fetch the current document first and send its latest `
 | My identity                           | `GET /api/agents/me`                                                                                                            |
 | My compact inbox                      | `GET /api/agents/me/inbox-lite`                                                                                                 |
 | My goal review (owned goals)          | `GET /api/agents/me/goal-review`                                                                                                |
+| Record goal verdicts                  | `POST /api/agents/me/goal-review/verdicts`                                                                                      |
 | My assignments                        | `GET /api/companies/:companyId/issues?assigneeAgentId=:id&status=todo,in_progress,in_review,blocked`                            |
 | Checkout task                         | `POST /api/issues/:issueId/checkout`                                                                                            |
 | Get task + ancestors                  | `GET /api/issues/:issueId`                                                                                                      |

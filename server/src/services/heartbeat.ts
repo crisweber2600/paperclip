@@ -10662,6 +10662,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return rows.map((row) => row.id);
   }
 
+  async function listGoalScopedRunIds(companyId: string, goalId: string) {
+    const runIssueId = sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`;
+
+    const rows = await db
+      .selectDistinctOn([heartbeatRuns.id], { id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .innerJoin(
+        issues,
+        and(
+          eq(issues.companyId, companyId),
+          sql`${issues.id}::text = ${runIssueId}`,
+        ),
+      )
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          inArray(heartbeatRuns.status, [...CANCELLABLE_HEARTBEAT_RUN_STATUSES]),
+          eq(issues.goalId, goalId),
+        ),
+      );
+
+    return rows.map((row) => row.id);
+  }
+
   async function listProjectScopedWakeupIds(companyId: string, projectId: string) {
     const wakeIssueId = sql<string | null>`${agentWakeupRequests.payload} ->> 'issueId'`;
     const effectiveProjectId = sql<string | null>`coalesce(${agentWakeupRequests.payload} ->> 'projectId', ${issues.projectId}::text)`;
@@ -10682,6 +10706,31 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
           sql`${agentWakeupRequests.runId} is null`,
           sql`${effectiveProjectId} = ${projectId}`,
+        ),
+      );
+
+    return rows.map((row) => row.id);
+  }
+
+  async function listGoalScopedWakeupIds(companyId: string, goalId: string) {
+    const wakeIssueId = sql<string | null>`${agentWakeupRequests.payload} ->> 'issueId'`;
+
+    const rows = await db
+      .selectDistinctOn([agentWakeupRequests.id], { id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .innerJoin(
+        issues,
+        and(
+          eq(issues.companyId, companyId),
+          sql`${issues.id}::text = ${wakeIssueId}`,
+        ),
+      )
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, companyId),
+          inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+          sql`${agentWakeupRequests.runId} is null`,
+          eq(issues.goalId, goalId),
         ),
       );
 
@@ -10717,6 +10766,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ),
         )
         .then((rows) => rows.map((row) => row.id));
+    } else if (scope.scopeType === "goal") {
+      wakeupIds = await listGoalScopedWakeupIds(scope.companyId, scope.scopeId);
     } else {
       wakeupIds = await listProjectScopedWakeupIds(scope.companyId, scope.scopeId);
     }
@@ -10918,7 +10969,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             ),
           )
           .then((rows) => rows.map((row) => row.id))
-        : await listProjectScopedRunIds(scope.companyId, scope.scopeId);
+        : scope.scopeType === "goal"
+          ? await listGoalScopedRunIds(scope.companyId, scope.scopeId)
+          : await listProjectScopedRunIds(scope.companyId, scope.scopeId);
 
     for (const runId of runIds) {
       await cancelRunInternal(runId, "Cancelled due to budget pause");

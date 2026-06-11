@@ -2677,6 +2677,52 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     expect(blockedRelations.blockedBy.map((relation) => relation.id)).toEqual([blockerId]);
   });
 
+  it("derives blockedByIssueIds from persisted blocker relations on issue reads", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const blockerId = randomUUID();
+    const blockedId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: blockerId,
+        companyId,
+        identifier: "PAP-10",
+        title: "Blocker",
+        status: "todo",
+        priority: "high",
+      },
+      {
+        id: blockedId,
+        companyId,
+        identifier: "PAP-11",
+        title: "Blocked issue",
+        status: "blocked",
+        priority: "medium",
+      },
+    ]);
+
+    await svc.update(blockedId, { blockedByIssueIds: [blockerId] });
+
+    await expect(svc.getById(blockedId)).resolves.toMatchObject({
+      id: blockedId,
+      blockedByIssueIds: [blockerId],
+    });
+    await expect(svc.getById("PAP-11")).resolves.toMatchObject({
+      id: blockedId,
+      blockedByIssueIds: [blockerId],
+    });
+    await expect(svc.getByIdentifier("pap-11")).resolves.toMatchObject({
+      id: blockedId,
+      blockedByIssueIds: [blockerId],
+    });
+  });
+
   it("adds terminal blockers to immediate blocked-by summaries", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({

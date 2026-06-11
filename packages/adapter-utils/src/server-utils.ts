@@ -422,11 +422,20 @@ type PaperclipWakeGoalReviewGoalRef = {
   title: string | null;
 };
 
+type PaperclipWakeGoalReviewAttentionGoal = {
+  id: string | null;
+  title: string | null;
+  lastVerdict: string | null;
+  verdictStreak: number;
+};
+
 type PaperclipWakeGoalReview = {
   due: boolean;
   ownedActiveGoalCount: number;
   goalsWithoutExecutionPathCount: number;
   goalsWithoutExecutionPath: PaperclipWakeGoalReviewGoalRef[];
+  attentionGoalCount: number;
+  attentionGoals: PaperclipWakeGoalReviewAttentionGoal[];
 };
 
 type PaperclipWakePayload = {
@@ -618,6 +627,22 @@ function normalizePaperclipWakeGoalReview(value: unknown): PaperclipWakeGoalRevi
         })
         .filter((entry): entry is PaperclipWakeGoalReviewGoalRef => Boolean(entry))
     : [];
+  const attentionGoals = Array.isArray(review.attentionGoals)
+    ? review.attentionGoals
+        .map((entry) => {
+          const goal = parseObject(entry);
+          const id = asString(goal.id, "").trim() || null;
+          const title = asString(goal.title, "").trim() || null;
+          if (!id && !title) return null;
+          return {
+            id,
+            title,
+            lastVerdict: asString(goal.lastVerdict, "").trim() || null,
+            verdictStreak: asNumber(goal.verdictStreak, 0),
+          };
+        })
+        .filter((entry): entry is PaperclipWakeGoalReviewAttentionGoal => Boolean(entry))
+    : [];
   return {
     due: true,
     ownedActiveGoalCount: asNumber(review.ownedActiveGoalCount, 0),
@@ -626,6 +651,8 @@ function normalizePaperclipWakeGoalReview(value: unknown): PaperclipWakeGoalRevi
       goalsWithoutExecutionPath.length,
     ),
     goalsWithoutExecutionPath,
+    attentionGoalCount: asNumber(review.attentionGoalCount, attentionGoals.length),
+    attentionGoals,
   };
 }
 
@@ -880,10 +907,20 @@ export function renderPaperclipWakePrompt(
     for (const goal of review.goalsWithoutExecutionPath) {
       lines.push(`  - ${goal.id ?? "unknown"}${goal.title ? ` ${goal.title}` : ""}`);
     }
+    if (review.attentionGoals.length > 0) {
+      lines.push(`- goals needing attention (stalled/blocked verdicts): ${review.attentionGoalCount}`);
+      for (const goal of review.attentionGoals) {
+        lines.push(
+          `  - ${goal.id ?? "unknown"}${goal.title ? ` ${goal.title}` : ""} (${goal.lastVerdict ?? "unknown"} x${goal.verdictStreak})`,
+        );
+      }
+    }
     lines.push(
       "Before exiting this heartbeat, call GET /api/agents/me/goal-review (MCP tool: paperclipGoalReview) to review the goals you own.",
+      "Judge each owned active goal against its acceptance criteria and record verdicts via POST /api/agents/me/goal-review/verdicts (MCP tool: paperclipGoalVerdict).",
       'For each goal flagged `needsPlanning: true`, create exactly one goal-linked planning issue (workMode "planning", goalId set, title "Plan: <goal title>") and assign it to yourself or delegate it to the right owner.',
-      "Goals that already have an open execution path need no action; never create a duplicate planning issue for a goal that already has one.",
+      "For goals you judged stalled or blocked, act on the existing execution path — comment, nudge the assignee, reprioritize, or escalate to the board; never create a duplicate planning issue.",
+      "Goals that already have an open execution path need no new planning issue.",
     );
   }
 

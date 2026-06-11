@@ -14,6 +14,7 @@ import {
   deriveAgentUrlKey,
   isUuidLike,
   normalizeIssueIdentifier,
+  recordGoalVerdictsSchema,
   resetAgentSessionSchema,
   testAdapterEnvironmentSchema,
   type AgentSkillSnapshot,
@@ -41,7 +42,10 @@ import {
   companySkillService,
   budgetService,
   getGoalReviewIntervalHours,
+  getGoalReviewMaxVerdictStreak,
   goalReviewService,
+  goalService,
+  isAttentionGoal,
   heartbeatService,
   ISSUE_LIST_DEFAULT_LIMIT,
   issueApprovalService,
@@ -1936,8 +1940,112 @@ export function agentRoutes(
       intervalHours: getGoalReviewIntervalHours(),
       lastReviewedAt: priorState.lastCheckedAt ?? null,
       goals: reviewGoals,
+      routineHint:
+        "For check-ins between reviews, you may create a self-assigned cron routine with goalId set via POST /api/companies/{companyId}/routines.",
     });
   });
+
+  // Records the goal owner's judge verdicts for its owned active goals.
+  // Verdicts never change goal status; a `done` verdict should be followed by
+  // PATCH /api/goals/:id { status: "achieved" } by the owner.
+  router.post(
+    "/agents/me/goal-review/verdicts",
+    validate(recordGoalVerdictsSchema),
+    async (req, res) => {
+      if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.companyId) {
+        res.status(401).json({ error: "Agent authentication required" });
+        return;
+      }
+      const agent = await svc.getById(req.actor.agentId);
+      if (!agent) {
+        res.status(404).json({ error: "Agent not found" });
+        return;
+      }
+
+      const { verdicts } = req.body as { verdicts: Array<{ goalId: string; verdict: string; reason: string }> };
+      const reviewSvc = goalReviewService(db);
+      const goalsSvc = goalService(db);
+      const ownedGoals = await reviewSvc.listOwnedActiveGoals(agent);
+      const ownedGoalIds = new Set(ownedGoals.map((goal) => goal.id));
+      const unknownGoalIds = verdicts
+        .map((entry) => entry.goalId)
+        .filter((goalId) => !ownedGoalIds.has(goalId));
+      if (unknownGoalIds.length > 0) {
+        res.status(422).json({
+          error: `Verdicts may only target active goals owned by this agent. Rejected: ${unknownGoalIds.join(", ")}`,
+        });
+        return;
+      }
+
+      const now = new Date();
+      const maxVerdictStreak = getGoalReviewMaxVerdictStreak();
+      const results: Array<{ goalId: string; verdict: string; verdictStreak: number; recordedAt: string }> = [];
+      for (const entry of verdicts) {
+        const updated = await goalsSvc.recordVerdict(entry.goalId, {
+          verdict: entry.verdict,
+          reason: entry.reason,
+          byAgentId: agent.id,
+          now,
+        });
+        if (!updated) continue;
+        await logActivity(db, {
+          companyId: agent.companyId,
+          actorType: "agent",
+          actorId: agent.id,
+          agentId: agent.id,
+          action: "goal.verdict_recorded",
+          entityType: "goal",
+          entityId: updated.id,
+          details: {
+            verdict: entry.verdict,
+            reason: entry.reason,
+            verdictStreak: updated.verdictStreak,
+            source: "owner_review",
+          },
+        });
+        if (
+          (entry.verdict === "stalled" || entry.verdict === "blocked") &&
+          updated.verdictStreak === maxVerdictStreak
+        ) {
+          // Fires only at the exact threshold so it logs once per exhaustion.
+          await logActivity(db, {
+            companyId: agent.companyId,
+            actorType: "agent",
+            actorId: agent.id,
+            agentId: agent.id,
+            action: "goal.review_attention_exhausted",
+            entityType: "goal",
+            entityId: updated.id,
+            details: {
+              verdict: entry.verdict,
+              verdictStreak: updated.verdictStreak,
+              maxVerdictStreak,
+            },
+          });
+        }
+        results.push({
+          goalId: updated.id,
+          verdict: entry.verdict,
+          verdictStreak: updated.verdictStreak,
+          recordedAt: now.toISOString(),
+        });
+      }
+
+      const refreshedGoals = await reviewSvc.listOwnedActiveGoals(agent);
+      const attentionGoalCount = refreshedGoals.filter(isAttentionGoal).length;
+      await reviewSvc.stampGoalReviewState(agent, {
+        lastEvaluatedAt: now.toISOString(),
+        attentionGoalCount,
+      });
+
+      res.json({
+        agentId: agent.id,
+        recordedCount: results.length,
+        attentionGoalCount,
+        results,
+      });
+    },
+  );
 
   router.get("/agents/me/inbox/mine", async (req, res) => {
     if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.companyId) {

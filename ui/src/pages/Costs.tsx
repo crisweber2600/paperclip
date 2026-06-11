@@ -526,6 +526,7 @@ export function Costs() {
     company: budgetPolicies.filter((policy) => policy.scopeType === "company"),
     agent: budgetPolicies.filter((policy) => policy.scopeType === "agent"),
     project: budgetPolicies.filter((policy) => policy.scopeType === "project"),
+    goal: budgetPolicies.filter((policy) => policy.scopeType === "goal"),
   }), [budgetPolicies]);
 
   if (!selectedCompanyId) {
@@ -901,7 +902,7 @@ export function Costs() {
               ) : null}
 
               <div className="space-y-5">
-                {(["company", "agent", "project"] as const).map((scopeType) => {
+                {(["company", "agent", "project", "goal"] as const).map((scopeType) => {
                   const rows = budgetPoliciesByScope[scopeType];
                   if (rows.length === 0) return null;
                   return (
@@ -913,7 +914,9 @@ export function Costs() {
                             ? "Company-wide monthly policy."
                             : scopeType === "agent"
                               ? "Recurring monthly spend policies for individual agents."
-                              : "Lifetime spend policies for execution-bound projects."}
+                              : scopeType === "project"
+                                ? "Lifetime spend policies for execution-bound projects."
+                                : "Lifetime spend policies for goal-linked work."}
                         </p>
                       </div>
                       <div className="grid gap-4 xl:grid-cols-2">

@@ -5,6 +5,17 @@ import {
   selectDefaultCompanyGoalId,
 } from "./onboarding-launch";
 
+const goalFixtureDefaults = {
+  acceptanceCriteria: [] as string[],
+  lastVerdict: null,
+  lastVerdictReason: null,
+  lastVerdictAt: null,
+  lastVerdictByAgentId: null,
+  verdictStreak: 0,
+  pauseReason: null,
+  pausedAt: null,
+};
+
 describe("selectDefaultCompanyGoalId", () => {
   it("prefers the earliest active root company goal", () => {
     expect(
@@ -18,6 +29,7 @@ describe("selectDefaultCompanyGoalId", () => {
           status: "active",
           parentId: null,
           ownerAgentId: null,
+          ...goalFixtureDefaults,
           createdAt: new Date("2026-03-04T00:00:00Z"),
           updatedAt: new Date("2026-03-04T00:00:00Z"),
         },
@@ -30,6 +42,7 @@ describe("selectDefaultCompanyGoalId", () => {
           status: "active",
           parentId: null,
           ownerAgentId: null,
+          ...goalFixtureDefaults,
           createdAt: new Date("2026-03-03T00:00:00Z"),
           updatedAt: new Date("2026-03-03T00:00:00Z"),
         },
@@ -42,6 +55,7 @@ describe("selectDefaultCompanyGoalId", () => {
           status: "active",
           parentId: null,
           ownerAgentId: null,
+          ...goalFixtureDefaults,
           createdAt: new Date("2026-03-02T00:00:00Z"),
           updatedAt: new Date("2026-03-02T00:00:00Z"),
         },
@@ -61,6 +75,7 @@ describe("selectDefaultCompanyGoalId", () => {
           status: "cancelled",
           parentId: null,
           ownerAgentId: null,
+          ...goalFixtureDefaults,
           createdAt: new Date("2026-03-03T00:00:00Z"),
           updatedAt: new Date("2026-03-03T00:00:00Z"),
         },
@@ -73,6 +88,7 @@ describe("selectDefaultCompanyGoalId", () => {
           status: "planned",
           parentId: null,
           ownerAgentId: null,
+          ...goalFixtureDefaults,
           createdAt: new Date("2026-03-02T00:00:00Z"),
           updatedAt: new Date("2026-03-02T00:00:00Z"),
         },

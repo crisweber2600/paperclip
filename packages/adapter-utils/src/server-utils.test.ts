@@ -680,6 +680,37 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("GET /api/agents/me/goal-review");
   });
 
+  it("renders attention goals with verdict streaks in the goal review section", () => {
+    const payload = {
+      reason: "heartbeat_timer",
+      goalReview: {
+        due: true,
+        ownedActiveGoalCount: 2,
+        goalsWithoutExecutionPathCount: 0,
+        goalsWithoutExecutionPath: [],
+        attentionGoalCount: 1,
+        attentionGoals: [
+          { id: "goal-1", title: "Ship V1", lastVerdict: "stalled", verdictStreak: 3 },
+        ],
+      },
+    };
+
+    const serialized = stringifyPaperclipWakePayload(payload);
+    expect(serialized).not.toBeNull();
+    expect(JSON.parse(serialized ?? "{}")).toMatchObject({
+      goalReview: {
+        attentionGoalCount: 1,
+        attentionGoals: [{ id: "goal-1", lastVerdict: "stalled", verdictStreak: 3 }],
+      },
+    });
+
+    const prompt = renderPaperclipWakePrompt(payload);
+    expect(prompt).toContain("- goals needing attention (stalled/blocked verdicts): 1");
+    expect(prompt).toContain("goal-1 Ship V1 (stalled x3)");
+    expect(prompt).toContain("POST /api/agents/me/goal-review/verdicts");
+    expect(prompt).toContain("paperclipGoalVerdict");
+  });
+
   it("drops a goal review that is not due", () => {
     const serialized = stringifyPaperclipWakePayload({
       reason: "heartbeat_timer",
