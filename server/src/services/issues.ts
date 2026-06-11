@@ -3087,7 +3087,12 @@ export function issueService(db: Db) {
       .then((rows) => rows[0] ?? null);
     if (!row) return null;
     const [enriched] = await withIssueLabels(db, [row]);
-    return enriched;
+    const relations = await getIssueRelationSummaryMap(row.companyId, [row.id], db);
+    const blockedBy = relations.get(row.id)?.blockedBy ?? [];
+    return {
+      ...enriched,
+      blockedByIssueIds: blockedBy.map((relation) => relation.id),
+    };
   }
 
   async function getIssueByIdentifier(identifier: string) {
@@ -3098,7 +3103,12 @@ export function issueService(db: Db) {
       .then((rows) => rows[0] ?? null);
     if (!row) return null;
     const [enriched] = await withIssueLabels(db, [row]);
-    return enriched;
+    const relations = await getIssueRelationSummaryMap(row.companyId, [row.id], db);
+    const blockedBy = relations.get(row.id)?.blockedBy ?? [];
+    return {
+      ...enriched,
+      blockedByIssueIds: blockedBy.map((relation) => relation.id),
+    };
   }
 
   async function getCurrentScheduledRetryForIssue(issueId: string, companyId: string): Promise<IssueScheduledRetryRow | null> {
