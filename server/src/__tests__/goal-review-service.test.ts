@@ -275,37 +275,36 @@ describe("goalReviewService.buildGoalReviewWakeSummary", () => {
 describe("goalService.recordVerdict", () => {
   it("increments the streak on a repeated verdict", async () => {
     const existing = goalRow({ lastVerdict: "stalled", verdictStreak: 2 });
-    const db = fakeDb([
-      [existing],
-      [{ ...existing, lastVerdict: "stalled", verdictStreak: 3 }],
-    ]);
+    const db = fakeDb([[{ ...existing, lastVerdict: "stalled", verdictStreak: 3 }]]);
     const updated = await goalService(db as never).recordVerdict("goal-1", {
       verdict: "stalled",
       reason: "still no movement",
       byAgentId: "agent-1",
     });
-    expect((db as { updateSets: Record<string, unknown>[] }).updateSets[0]).toEqual(
+    const updateSet = (db as { updateSets: Record<string, unknown>[] }).updateSets[0];
+    expect(updateSet).toEqual(
       expect.objectContaining({
         lastVerdict: "stalled",
         lastVerdictReason: "still no movement",
         lastVerdictByAgentId: "agent-1",
-        verdictStreak: 3,
       }),
     );
+    // verdictStreak is a SQL expression for atomic update — verify it is not a plain number
+    expect(typeof updateSet.verdictStreak).not.toBe("number");
     expect(updated).toEqual(expect.objectContaining({ verdictStreak: 3 }));
   });
 
   it("resets the streak when the verdict changes", async () => {
     const existing = goalRow({ lastVerdict: "stalled", verdictStreak: 4 });
-    const db = fakeDb([[existing], [{ ...existing, lastVerdict: "progressing", verdictStreak: 1 }]]);
+    const db = fakeDb([[{ ...existing, lastVerdict: "progressing", verdictStreak: 1 }]]);
     await goalService(db as never).recordVerdict("goal-1", {
       verdict: "progressing",
       reason: "issue moving again",
       byAgentId: "agent-1",
     });
-    expect((db as { updateSets: Record<string, unknown>[] }).updateSets[0]).toEqual(
-      expect.objectContaining({ verdictStreak: 1 }),
-    );
+    const updateSet = (db as { updateSets: Record<string, unknown>[] }).updateSets[0];
+    // verdictStreak is a SQL expression for atomic update — verify it is not a plain number
+    expect(typeof updateSet.verdictStreak).not.toBe("number");
   });
 
   it("returns null for a missing goal", async () => {

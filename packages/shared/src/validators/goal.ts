@@ -8,7 +8,7 @@ export const createGoalSchema = z.object({
   status: z.enum(GOAL_STATUSES).optional().default("planned"),
   parentId: z.string().uuid().optional().nullable(),
   ownerAgentId: z.string().uuid().optional().nullable(),
-  acceptanceCriteria: z.array(z.string().min(1).max(500)).max(25).optional(),
+  acceptanceCriteria: z.array(z.string().trim().min(1).max(500)).max(25).optional(),
 });
 
 export type CreateGoal = z.infer<typeof createGoalSchema>;
@@ -25,7 +25,7 @@ export const recordGoalVerdictsSchema = z.object({
       z.object({
         goalId: z.string().uuid(),
         verdict: z.enum(GOAL_VERDICTS),
-        reason: z.string().min(1).max(2000),
+        reason: z.string().trim().min(1).max(2000),
       }),
     )
     .min(1)

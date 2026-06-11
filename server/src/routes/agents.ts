@@ -1963,6 +1963,12 @@ export function agentRoutes(
       }
 
       const { verdicts } = req.body as { verdicts: Array<{ goalId: string; verdict: string; reason: string }> };
+      const goalIds = verdicts.map((entry) => entry.goalId);
+      const uniqueGoalIds = new Set(goalIds);
+      if (uniqueGoalIds.size !== goalIds.length) {
+        res.status(400).json({ error: "Duplicate goalIds are not allowed in a single request" });
+        return;
+      }
       const reviewSvc = goalReviewService(db);
       const goalsSvc = goalService(db);
       const ownedGoals = await reviewSvc.listOwnedActiveGoals(agent);

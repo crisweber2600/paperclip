@@ -260,12 +260,13 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
         verdicts: z
           .array(
             z.object({
-              goalId: z.string().min(1),
+              goalId: z.string().uuid(),
               verdict: z.enum(["done", "progressing", "stalled", "blocked"]),
-              reason: z.string().min(1),
+              reason: z.string().trim().min(1).max(2000),
             }),
           )
-          .min(1),
+          .min(1)
+          .max(25),
       }),
       async (input) => client.requestJson("POST", "/agents/me/goal-review/verdicts", { body: input }),
     ),

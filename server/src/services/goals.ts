@@ -1,4 +1,4 @@
-import { and, asc, eq, isNull, or } from "drizzle-orm";
+import { and, asc, eq, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { goals } from "@paperclipai/db";
 
@@ -10,7 +10,7 @@ export const MAX_GOAL_ANCESTOR_DEPTH = 8;
 
 export function parseAcceptanceCriteria(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
-  return value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0);
+  return value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0).map((entry) => entry.trim());
 }
 
 async function walkGoalAncestors(
@@ -154,18 +154,13 @@ export function goalService(db: Db) {
     // Records an agent-posted (or, with byAgentId null, a future server-judge)
     // goal verdict. The streak counts consecutive identical verdicts and is the
     // turn-budget analog: review escalation stops once it exceeds the cap.
+    // The streak is updated atomically in SQL to prevent lost increments under
+    // concurrent requests.
     recordVerdict: async (
       id: string,
       input: { verdict: string; reason: string; byAgentId: string | null; now?: Date },
     ) => {
-      const existing = await db
-        .select()
-        .from(goals)
-        .where(eq(goals.id, id))
-        .then((rows) => rows[0] ?? null);
-      if (!existing) return null;
       const now = input.now ?? new Date();
-      const verdictStreak = existing.lastVerdict === input.verdict ? existing.verdictStreak + 1 : 1;
       return db
         .update(goals)
         .set({
@@ -173,7 +168,7 @@ export function goalService(db: Db) {
           lastVerdictReason: input.reason,
           lastVerdictAt: now,
           lastVerdictByAgentId: input.byAgentId,
-          verdictStreak,
+          verdictStreak: sql`CASE WHEN ${goals.lastVerdict} = ${input.verdict} THEN ${goals.verdictStreak} + 1 ELSE 1 END`,
           updatedAt: now,
         })
         .where(eq(goals.id, id))

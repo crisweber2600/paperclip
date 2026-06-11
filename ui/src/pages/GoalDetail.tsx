@@ -57,8 +57,9 @@ function AcceptanceCriteriaSection({
               <Button
                 variant="ghost"
                 size="icon-xs"
-                className="opacity-0 group-hover:opacity-100 shrink-0"
+                className="opacity-0 group-hover:opacity-100 focus:opacity-100 shrink-0"
                 title="Remove criterion"
+                aria-label="Remove criterion"
                 onClick={() => onChange(criteria.filter((_, i) => i !== index))}
               >
                 <X className="h-3.5 w-3.5" />
@@ -174,7 +175,7 @@ export function GoalDetail() {
   });
 
   const { data: budgetOverview } = useQuery({
-    queryKey: queryKeys.budgets.overview(resolvedCompanyId!),
+    queryKey: queryKeys.budgets.overview(resolvedCompanyId ?? "__none__"),
     queryFn: () => budgetsApi.overview(resolvedCompanyId!),
     enabled: !!resolvedCompanyId,
   });
