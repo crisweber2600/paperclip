@@ -603,10 +603,13 @@ describe("renderPaperclipWakePrompt", () => {
   it("keeps the default local-agent prompt action-oriented", () => {
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Start actionable work in this heartbeat");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("do not stop at a plan");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("goal, spec, and acceptance criteria");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("If the issue is implementation-scoped, do the implementation work in this heartbeat");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("clear final disposition");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("evidence, not valid liveness paths by themselves");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("keep `in_progress` only when a live continuation path exists");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Prefer the smallest verification that proves the change");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("first look for attached goal context, plan docs, parent issue context, and referenced repo docs");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Use child issues");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("instead of polling agents, sessions, or processes");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Create child issues directly when you know what needs to be done");
@@ -678,6 +681,130 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("This heartbeat is scoped to the issue below.");
     expect(prompt).toContain("Goal review due:");
     expect(prompt).toContain("GET /api/agents/me/goal-review");
+  });
+
+  it("preserves issue-linked goal context in the serialized wake payload", () => {
+    const serialized = stringifyPaperclipWakePayload({
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-12",
+        title: "Thread goal context into agent wake payloads and instructions",
+        status: "in_progress",
+        priority: "high",
+        workMode: "standard",
+        goalId: "goal-1",
+        goal: {
+          id: "goal-1",
+          title: "Improve agent wake payloads",
+          level: "team",
+          status: "active",
+          ownerAgentId: "agent-1",
+          description: "Agents should receive enough goal context to act without refetching.",
+          descriptionTruncated: false,
+          ancestors: [
+            {
+              id: "goal-root",
+              title: "Ship V1",
+              level: "company",
+              status: "active",
+              description: "Primary company objective.",
+            },
+          ],
+        },
+      },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(serialized).not.toBeNull();
+    expect(JSON.parse(serialized ?? "{}")).toMatchObject({
+      issue: {
+        goalId: "goal-1",
+        goal: {
+          id: "goal-1",
+          title: "Improve agent wake payloads",
+          ancestors: [{ id: "goal-root", title: "Ship V1" }],
+        },
+      },
+    });
+  });
+
+  it("renders issue goal context in scoped wake prompts", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-12",
+        title: "Thread goal context into agent wake payloads and instructions",
+        status: "in_progress",
+        priority: "high",
+        workMode: "standard",
+        goalId: "goal-1",
+        goal: {
+          id: "goal-1",
+          title: "Improve agent wake payloads",
+          level: "team",
+          status: "active",
+          ownerAgentId: "agent-1",
+          description: "Agents should receive enough goal context to act without refetching.",
+          descriptionTruncated: false,
+          ancestors: [
+            {
+              id: "goal-root",
+              title: "Ship V1",
+              level: "company",
+              status: "active",
+              description: "Primary company objective.",
+            },
+          ],
+        },
+      },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("- issue goal id: goal-1");
+    expect(prompt).toContain("- issue goal: Improve agent wake payloads");
+    expect(prompt).toContain("- issue goal level: team");
+    expect(prompt).toContain("- issue goal status: active");
+    expect(prompt).toContain("- issue goal owner: agent agent-1");
+    expect(prompt).toContain("- issue goal ancestors: Ship V1");
+    expect(prompt).toContain("Issue goal context:");
+    expect(prompt).toContain("Agents should receive enough goal context to act without refetching.");
+  });
+
+  it("renders attention goals with verdict streaks in the goal review section", () => {
+    const payload = {
+      reason: "heartbeat_timer",
+      goalReview: {
+        due: true,
+        ownedActiveGoalCount: 2,
+        goalsWithoutExecutionPathCount: 0,
+        goalsWithoutExecutionPath: [],
+        attentionGoalCount: 1,
+        attentionGoals: [
+          { id: "goal-1", title: "Ship V1", lastVerdict: "stalled", verdictStreak: 3 },
+        ],
+      },
+    };
+
+    const serialized = stringifyPaperclipWakePayload(payload);
+    expect(serialized).not.toBeNull();
+    expect(JSON.parse(serialized ?? "{}")).toMatchObject({
+      goalReview: {
+        attentionGoalCount: 1,
+        attentionGoals: [{ id: "goal-1", lastVerdict: "stalled", verdictStreak: 3 }],
+      },
+    });
+
+    const prompt = renderPaperclipWakePrompt(payload);
+    expect(prompt).toContain("- goals needing attention (stalled/blocked verdicts): 1");
+    expect(prompt).toContain("goal-1 Ship V1 (stalled x3)");
+    expect(prompt).toContain("POST /api/agents/me/goal-review/verdicts");
+    expect(prompt).toContain("paperclipGoalVerdict");
   });
 
   it("drops a goal review that is not due", () => {

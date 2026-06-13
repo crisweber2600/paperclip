@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { classifyRunLiveness } from "../services/run-liveness.ts";
+import {
+  RUN_LIVENESS_CONTINUATION_REASON,
+  decideRunLivenessContinuation,
+} from "../services/recovery/run-liveness-continuations.ts";
 
 const baseInput = {
   runStatus: "succeeded",
@@ -206,5 +210,68 @@ describe("run liveness classifier", () => {
     expect(classification.livenessState).toBe("needs_followup");
     expect(classification.actionability).toBe("unknown");
     expect(classification.nextAction).toBeNull();
+  });
+});
+
+const run = {
+  id: "run-1",
+  companyId: "company-1",
+  agentId: "agent-1",
+  continuationAttempt: 0,
+  contextSnapshot: { issueId: "issue-1" },
+} as any;
+
+const issue = {
+  id: "issue-1",
+  companyId: "company-1",
+  status: "in_progress",
+  assigneeAgentId: "agent-1",
+  executionState: null,
+} as any;
+
+const agent = {
+  id: "agent-1",
+  companyId: "company-1",
+  status: "idle",
+} as any;
+
+describe("run liveness continuation decision", () => {
+  it("carries prior goal-review context into later continuation heartbeats", () => {
+    const decision = decideRunLivenessContinuation({
+      run: {
+        ...run,
+        contextSnapshot: {
+          issueId: "issue-1",
+          paperclipGoalReview: {
+            due: true,
+            ownedActiveGoalCount: 2,
+            goalsWithoutExecutionPathCount: 1,
+            goalsWithoutExecutionPath: [{ id: "goal-1", title: "Unblock launch" }],
+            attentionGoalCount: 1,
+            attentionGoals: [{ id: "goal-2", title: "Fix regressions", lastVerdict: "stalled", verdictStreak: 2 }],
+          },
+        },
+      } as any,
+      issue,
+      agent,
+      livenessState: "plan_only",
+      livenessReason: "Need concrete next action",
+      nextAction: null,
+      budgetBlocked: false,
+      idempotentWakeExists: false,
+    });
+
+    expect(decision.kind).toBe("enqueue");
+    if (decision.kind !== "enqueue") return;
+    expect(decision.idempotencyKey).toBe(`${RUN_LIVENESS_CONTINUATION_REASON}:issue-1:run-1:plan_only:1`);
+    expect(decision.contextSnapshot).toMatchObject({
+      wakeReason: RUN_LIVENESS_CONTINUATION_REASON,
+      paperclipGoalReview: {
+        due: true,
+        ownedActiveGoalCount: 2,
+        goalsWithoutExecutionPathCount: 1,
+        attentionGoalCount: 1,
+      },
+    });
   });
 });

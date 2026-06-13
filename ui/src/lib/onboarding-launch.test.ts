@@ -5,6 +5,19 @@ import {
   selectDefaultCompanyGoalId,
 } from "./onboarding-launch";
 
+const goalFixtureDefaults = {
+  acceptanceCriteria: [] as string[],
+  lastVerdict: null,
+  lastVerdictReason: null,
+  lastVerdictAt: null,
+  lastVerdictByAgentId: null,
+  verdictStreak: 0,
+  pauseReason: null,
+  pausedAt: null,
+  executionPath: { openIssueCount: 0, openProjectCount: 0, hasExecutionPath: false },
+  needsPlanning: false,
+};
+
 describe("selectDefaultCompanyGoalId", () => {
   it("prefers the earliest active root company goal", () => {
     expect(
@@ -18,8 +31,9 @@ describe("selectDefaultCompanyGoalId", () => {
           status: "active",
           parentId: null,
           ownerAgentId: null,
-          createdAt: new Date("2026-03-04T00:00:00Z"),
-          updatedAt: new Date("2026-03-04T00:00:00Z"),
+          ...goalFixtureDefaults,
+          createdAt: "2026-03-04T00:00:00Z",
+          updatedAt: "2026-03-04T00:00:00Z",
         },
         {
           id: "goal-2",
@@ -30,8 +44,9 @@ describe("selectDefaultCompanyGoalId", () => {
           status: "active",
           parentId: null,
           ownerAgentId: null,
-          createdAt: new Date("2026-03-03T00:00:00Z"),
-          updatedAt: new Date("2026-03-03T00:00:00Z"),
+          ...goalFixtureDefaults,
+          createdAt: "2026-03-03T00:00:00Z",
+          updatedAt: "2026-03-03T00:00:00Z",
         },
         {
           id: "goal-1",
@@ -42,8 +57,9 @@ describe("selectDefaultCompanyGoalId", () => {
           status: "active",
           parentId: null,
           ownerAgentId: null,
-          createdAt: new Date("2026-03-02T00:00:00Z"),
-          updatedAt: new Date("2026-03-02T00:00:00Z"),
+          ...goalFixtureDefaults,
+          createdAt: "2026-03-02T00:00:00Z",
+          updatedAt: "2026-03-02T00:00:00Z",
         },
       ]),
     ).toBe("goal-1");
@@ -61,8 +77,9 @@ describe("selectDefaultCompanyGoalId", () => {
           status: "cancelled",
           parentId: null,
           ownerAgentId: null,
-          createdAt: new Date("2026-03-03T00:00:00Z"),
-          updatedAt: new Date("2026-03-03T00:00:00Z"),
+          ...goalFixtureDefaults,
+          createdAt: "2026-03-03T00:00:00Z",
+          updatedAt: "2026-03-03T00:00:00Z",
         },
         {
           id: "goal-1",
@@ -73,8 +90,9 @@ describe("selectDefaultCompanyGoalId", () => {
           status: "planned",
           parentId: null,
           ownerAgentId: null,
-          createdAt: new Date("2026-03-02T00:00:00Z"),
-          updatedAt: new Date("2026-03-02T00:00:00Z"),
+          ...goalFixtureDefaults,
+          createdAt: "2026-03-02T00:00:00Z",
+          updatedAt: "2026-03-02T00:00:00Z",
         },
       ]),
     ).toBe("goal-1");

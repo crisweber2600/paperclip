@@ -94,6 +94,32 @@ describe("buildPaperclipTaskMarkdown", () => {
     expect(commentWake).toContain("Update the plan only. Do not write code or perform implementation work.");
     expect(commentWake).not.toContain("Create child issues from the approved plan only");
   });
+
+  it("emits goal-review guidance for unscoped goal-review wakes", () => {
+    const goalReviewWake = buildPaperclipTaskMarkdown({
+      issue: null,
+      goalReview: {
+        due: true,
+        ownedActiveGoalCount: 2,
+        goalsWithoutExecutionPathCount: 1,
+        goalsWithoutExecutionPath: [{ id: "goal-1", title: "Plan the launch" }],
+        attentionGoalCount: 1,
+        attentionGoals: [
+          { id: "goal-2", title: "Unblock payments", lastVerdict: "stalled", verdictStreak: 2 },
+        ],
+      },
+    });
+
+    expect(goalReviewWake).toContain("Goal-review wake:");
+    expect(goalReviewWake).toContain("- Owned active goals: 2");
+    expect(goalReviewWake).toContain("- Goals needing planning: 1");
+    expect(goalReviewWake).toContain("- Attention goals: 1");
+    expect(goalReviewWake).toContain("Review owned active goals now. Record verdicts");
+    expect(goalReviewWake).toContain("Goals without execution paths:");
+    expect(goalReviewWake).toContain('"Plan the launch" ("goal-1")');
+    expect(goalReviewWake).toContain("Attention goals:");
+    expect(goalReviewWake).toContain('"Unblock payments" ("goal-2"): verdict "stalled", streak 2');
+  });
 });
 
 describe("mergeCoalescedContextSnapshot", () => {

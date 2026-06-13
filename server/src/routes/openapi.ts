@@ -47,6 +47,7 @@ import {
   // Goal
   createGoalSchema,
   updateGoalSchema,
+  recordGoalVerdictsSchema,
   // Secret
   createSecretSchema,
   updateSecretSchema,
@@ -1006,6 +1007,15 @@ registry.registerPath({
   tags: ["agents"],
   summary: "Get current agent owned active goals with execution-path status (records a goal review)",
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/agents/me/goal-review/verdicts",
+  tags: ["agents"],
+  summary: "Record goal-review verdicts for active goals owned by the current agent",
+  request: { body: jsonBody(recordGoalVerdictsSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound, 422: r.unprocessable },
 });
 
 registry.registerPath({

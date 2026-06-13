@@ -180,6 +180,72 @@ export {
 } from "./trust-policy.js";
 
 export {
+  paperclipWakeIssueGoalAncestorSchema,
+  paperclipWakeIssueGoalSchema,
+  paperclipWakeIssueSchema,
+  paperclipWakeExecutionPrincipalSchema,
+  paperclipWakeExecutionStageSchema,
+  paperclipWakeCommentSchema,
+  paperclipWakeContinuationSummarySchema,
+  paperclipWakeLivenessContinuationSchema,
+  paperclipWakeChildIssueSummarySchema,
+  paperclipWakeBlockerSummarySchema,
+  paperclipWakeTreeHoldSummarySchema,
+  paperclipWakeGoalReviewGoalRefSchema,
+  paperclipWakeGoalReviewAttentionGoalSchema,
+  paperclipWakeGoalReviewSchema,
+  paperclipWakePayloadSchema,
+  type PaperclipWakeIssueGoalAncestor,
+  type PaperclipWakeIssueGoal,
+  type PaperclipWakeIssue,
+  type PaperclipWakeExecutionPrincipal,
+  type PaperclipWakeExecutionStage,
+  type PaperclipWakeComment,
+  type PaperclipWakeContinuationSummary,
+  type PaperclipWakeLivenessContinuation,
+  type PaperclipWakeChildIssueSummary,
+  type PaperclipWakeBlockerSummary,
+  type PaperclipWakeTreeHoldSummary,
+  type PaperclipWakeGoalReviewGoalRef,
+  type PaperclipWakeGoalReviewAttentionGoal,
+  type PaperclipWakeGoalReview,
+  type PaperclipWakePayload,
+} from "./heartbeat.js";
+
+export {
+  createGoalSchema,
+  updateGoalSchema,
+  recordGoalVerdictsSchema,
+  goalExecutionPathSchema,
+  goalOperatorViewSchema,
+  goalAncestorSummarySchema,
+  goalReviewItemSchema,
+  goalReviewResponseSchema,
+  goalReviewPlanningIssueSchema,
+  goalReviewVerdictResultSchema,
+  recordGoalVerdictsResponseSchema,
+  goalReviewWakeGoalSummarySchema,
+  goalReviewWakeAttentionGoalSummarySchema,
+  goalReviewWakeContextSchema,
+  goalReviewRuntimeStateSchema,
+  type CreateGoal,
+  type UpdateGoal,
+  type RecordGoalVerdicts,
+  type GoalExecutionPath,
+  type GoalOperatorViewPayload,
+  type GoalAncestorSummary,
+  type GoalReviewItem,
+  type GoalReviewResponse,
+  type GoalReviewPlanningIssue,
+  type GoalReviewVerdictResult,
+  type RecordGoalVerdictsResponse,
+  type GoalReviewWakeGoalSummary,
+  type GoalReviewWakeAttentionGoalSummary,
+  type GoalReviewWakeContext,
+  type GoalReviewRuntimeState,
+} from "./goal.js";
+
+export {
   createAgentSchema,
   createAgentHireSchema,
   updateAgentSchema,
@@ -208,6 +274,16 @@ export {
   type TestAdapterEnvironment,
   type UpdateAgentPermissions,
 } from "./agent.js";
+
+export {
+  governingArtifactReferenceKindSchema,
+  governingArtifactReferenceSchema,
+  governingArtifactReferenceListSchema,
+  acceptanceEvidenceEntrySchema,
+  acceptanceEvidenceEntryListSchema,
+  type GoverningArtifactReference,
+  type AcceptanceEvidenceEntry,
+} from "./governing-artifact.js";
 
 export {
   createProjectSchema,
@@ -277,6 +353,7 @@ export {
   askUserQuestionsAnswerSchema,
   askUserQuestionsResultSchema,
   requestConfirmationIssueDocumentTargetSchema,
+  requestConfirmationIssueWorkProductTargetSchema,
   requestConfirmationCustomTargetSchema,
   requestConfirmationTargetSchema,
   requestConfirmationPayloadSchema,
@@ -316,6 +393,15 @@ export {
   type UpsertIssueDocument,
   type RestoreIssueDocumentRevision,
 } from "./issue.js";
+
+export {
+  docsToRoutinesProposalCorpusInputSchema,
+  generateDocsToRoutinesProposalSchema,
+  requestDocsToRoutinesProposalReviewSchema,
+  type DocsToRoutinesProposalCorpusInput,
+  type GenerateDocsToRoutinesProposal,
+  type RequestDocsToRoutinesProposalReview,
+} from "./docs-to-routines.js";
 
 export {
   COMPANY_SEARCH_DEFAULT_LIMIT,
@@ -394,13 +480,6 @@ export {
 } from "./workspace-file-resource.js";
 
 export {
-  createGoalSchema,
-  updateGoalSchema,
-  type CreateGoal,
-  type UpdateGoal,
-} from "./goal.js";
-
-export {
   createApprovalSchema,
   resolveApprovalSchema,
   requestApprovalRevisionSchema,
@@ -465,6 +544,14 @@ export {
   type RunRoutine,
   type RotateRoutineTriggerSecret,
 } from "./routine.js";
+export {
+  routineProposalArtifactSchema,
+  routineProposalEntrySchema,
+  applyRoutineProposalSchema,
+  type RoutineProposalArtifact,
+  type RoutineProposalEntry,
+  type ApplyRoutineProposal,
+} from "./routine-proposal.js";
 
 export {
   createCostEventSchema,

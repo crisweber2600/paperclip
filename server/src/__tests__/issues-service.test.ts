@@ -20,6 +20,7 @@ import {
   issuePlanDecompositions,
   issueRelations,
   issueThreadInteractions,
+  issueWorkProducts,
   issues,
   projectWorkspaces,
   projects,
@@ -232,6 +233,51 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
         assigneeAgentId: terminatedAgentId,
       },
     });
+  });
+
+  it("rejects creating a duplicate active planning issue for the same goal", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Acme", issuePrefix: "PAP" });
+
+    const goalId = randomUUID();
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Ship V1",
+      level: "company",
+      status: "active",
+      ownerAgentId: null,
+    });
+
+    const first = await svc.create(companyId, {
+      title: "Plan: Ship V1",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      workMode: "planning",
+      goalId,
+    });
+
+    await expect(
+      svc.create(companyId, {
+        title: "Plan: Ship V1 again",
+        description: null,
+        status: "backlog",
+        priority: "medium",
+        workMode: "planning",
+        goalId,
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+
+    const persisted = await db
+      .select({ id: issues.id, title: issues.title })
+      .from(issues)
+      .where(eq(issues.goalId, goalId))
+      .orderBy(asc(issues.createdAt));
+
+    expect(first.workMode).toBe("planning");
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0]?.title).toBe("Plan: Ship V1");
   });
 
   it("rejects invalid ancestor-chain assignees and preserves the existing assignment", async () => {
@@ -4514,6 +4560,7 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(issueWorkProducts);
     await db.delete(issuePlanDecompositions);
     await db.delete(issueThreadInteractions);
     await db.delete(issueDocuments);
@@ -5198,6 +5245,160 @@ describeEmbeddedPostgres("accepted plan decomposition", () => {
     );
     expect(record).not.toHaveProperty("requestedChildren");
     expect(record?.childIssues.every((child) => typeof child.title === "string")).toBe(true);
+  });
+
+  it("carries an accepted plan from planning signal through decomposition, blockers, and closure evidence", async () => {
+    const { companyId, goalId, assigneeAgentId } = await seedAcceptedPlanContext();
+    const sourceIssueId = randomUUID();
+    const blockerIssueId = randomUUID();
+    const childRunId = randomUUID();
+
+    await db.insert(heartbeatRuns).values({
+      id: childRunId,
+      companyId,
+      agentId: assigneeAgentId,
+      status: "running",
+      invocationSource: "manual",
+    });
+
+    await db.insert(issues).values({
+      id: blockerIssueId,
+      companyId,
+      goalId,
+      title: "External unblock",
+      status: "done",
+      priority: "medium",
+      workMode: "standard",
+      assigneeAgentId,
+    });
+
+    const planningIssue = await seedAcceptedPlanIssue({
+      companyId,
+      goalId,
+      assigneeAgentId,
+      sourceIssueId,
+      issueTitle: "Plan: Validate goal/spec execution loop",
+      workMode: "planning",
+    });
+
+    const children = [
+      {
+        title: "Implement loop validation coverage",
+        status: "todo" as const,
+        workMode: "standard" as const,
+        priority: "medium" as const,
+        blockedByIssueIds: [blockerIssueId],
+      },
+      {
+        title: "Write operator verification checklist",
+        status: "todo" as const,
+        workMode: "standard" as const,
+        priority: "medium" as const,
+      },
+    ];
+
+    const decomposition = await svc.decomposeAcceptedPlan(sourceIssueId, {
+      acceptedPlanRevisionId: planningIssue.acceptedPlanRevisionId,
+      children,
+      actorAgentId: assigneeAgentId,
+    });
+
+    expect(decomposition.decomposition.status).toBe("completed");
+    expect(decomposition.newlyCreatedIssues).toHaveLength(2);
+
+    const childRows = await db
+      .select({
+        id: issues.id,
+        title: issues.title,
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+        parentId: issues.parentId,
+        goalId: issues.goalId,
+      })
+      .from(issues)
+      .where(eq(issues.parentId, sourceIssueId))
+      .orderBy(asc(issues.createdAt), asc(issues.id));
+
+    expect(childRows).toHaveLength(2);
+    expect(childRows.every((row) => row.parentId === sourceIssueId)).toBe(true);
+    expect(childRows.every((row) => row.goalId === goalId)).toBe(true);
+    expect(childRows.every((row) => row.assigneeUserId === null)).toBe(true);
+    const implementationChild = childRows.find((row) => row.title === "Implement loop validation coverage");
+    const checklistChild = childRows.find((row) => row.title === "Write operator verification checklist");
+
+    expect(implementationChild).toBeTruthy();
+    expect(checklistChild).toBeTruthy();
+
+    const inProgressChild = await svc.checkout(implementationChild!.id, assigneeAgentId, ["todo"], childRunId);
+    expect(inProgressChild.status).toBe("in_progress");
+    expect(inProgressChild.assigneeAgentId).toBe(assigneeAgentId);
+    expect(inProgressChild.assigneeUserId).toBeNull();
+
+    await svc.update(implementationChild!.id, {
+      status: "blocked",
+      blockedByIssueIds: [blockerIssueId],
+    });
+
+    const blockedChild = await svc.getById(implementationChild!.id);
+    expect(blockedChild?.status).toBe("blocked");
+    const blockedReadiness = await svc.getDependencyReadiness(implementationChild!.id);
+    expect(blockedReadiness.blockerIssueIds).toEqual([blockerIssueId]);
+    expect(blockedReadiness.unresolvedBlockerIssueIds).toEqual([]);
+    expect(blockedReadiness.isDependencyReady).toBe(true);
+
+    const checklistWorkProduct = await db.insert(issueWorkProducts).values({
+      id: randomUUID(),
+      companyId,
+      issueId: checklistChild!.id,
+      type: "artifact",
+      provider: "paperclip",
+      title: "Goal/spec execution loop verification checklist",
+      status: "ready_for_review",
+      reviewState: "none",
+      isPrimary: true,
+      summary: "Operator checklist for reviewing the end-to-end goal/spec loop.",
+      metadata: {
+        resourceRef: {
+          kind: "workspace_file",
+          workspaceKind: "execution_workspace",
+          workspaceId: sourceIssueId,
+          relativePath: "doc/checklists/goal-spec-execution-loop.md",
+          displayPath: "doc/checklists/goal-spec-execution-loop.md:1:1",
+        },
+      },
+      createdByRunId: childRunId,
+    }).returning({ id: issueWorkProducts.id });
+
+    expect(checklistWorkProduct[0]?.id).toBeTruthy();
+
+    await svc.update(checklistChild!.id, {
+      status: "done",
+    });
+
+    const finishedChecklistChild = await svc.getById(checklistChild!.id);
+    expect(finishedChecklistChild?.status).toBe("done");
+
+    const storedWorkProducts = await db
+      .select({ id: issueWorkProducts.id, issueId: issueWorkProducts.issueId, title: issueWorkProducts.title, status: issueWorkProducts.status })
+      .from(issueWorkProducts)
+      .where(eq(issueWorkProducts.issueId, checklistChild!.id));
+    expect(storedWorkProducts).toEqual([
+      expect.objectContaining({
+        issueId: checklistChild!.id,
+        title: "Goal/spec execution loop verification checklist",
+        status: "ready_for_review",
+      }),
+    ]);
+
+    const repeated = await svc.decomposeAcceptedPlan(sourceIssueId, {
+      acceptedPlanRevisionId: planningIssue.acceptedPlanRevisionId,
+      children,
+      actorAgentId: assigneeAgentId,
+    });
+
+    expect(repeated.childIssueIds.sort()).toEqual([...decomposition.childIssueIds].sort());
+    expect(repeated.newlyCreatedIssues).toHaveLength(0);
   });
 });
 

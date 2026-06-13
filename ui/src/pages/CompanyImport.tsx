@@ -34,6 +34,7 @@ import { Field, adapterLabels } from "../components/agent-config-primitives";
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
 import { defaultCreateValues } from "../components/agent-config-defaults";
 import { getUIAdapter, listUIAdapters } from "../adapters";
+import { useLocation } from "@/lib/router";
 import type { CreateConfigValues } from "@paperclipai/adapter-utils";
 import {
   type FileTreeNode,
@@ -654,6 +655,7 @@ export function CompanyImport() {
   const { pushToast } = useToastActions();
   const queryClient = useQueryClient();
   const packageInputRef = useRef<HTMLInputElement | null>(null);
+  const location = useLocation();
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
@@ -706,12 +708,17 @@ export function CompanyImport() {
   const localZipHelpText =
     "Upload a .zip exported directly from Paperclip. Re-zipped archives created by Finder, Explorer, or other zip tools may not import correctly.";
 
+  const bootstrapMode = useMemo(() => {
+    const params = new URLSearchParams(location.search);
+    return params.get("entry") === "bootstrap";
+  }, [location.search]);
+
   useEffect(() => {
     setBreadcrumbs([
       { label: "Org Chart", href: "/org" },
-      { label: "Import" },
+      { label: bootstrapMode ? "Bootstrap from docs/repo" : "Import" },
     ]);
-  }, [setBreadcrumbs]);
+  }, [bootstrapMode, setBreadcrumbs]);
 
   function buildSource(): CompanyPortabilitySource | null {
     if (sourceMode === "local") {
@@ -1085,7 +1092,7 @@ export function CompanyImport() {
     : null;
   const selectedAction = selectedFile ? (actionMap.get(selectedFile) ?? null) : null;
 
-  if (!selectedCompanyId) {
+  if (targetMode === "existing" && !selectedCompanyId) {
     return <EmptyState icon={Download} message="Select a company to import into." />;
   }
 
@@ -1094,11 +1101,21 @@ export function CompanyImport() {
       {/* Source form section */}
       <div className="border-b border-border px-5 py-5 space-y-4">
         <div>
-          <h2 className="text-base font-semibold">Import source</h2>
+          <h2 className="text-base font-semibold">
+            {bootstrapMode ? "Bootstrap from docs/repo" : "Import source"}
+          </h2>
           <p className="text-xs text-muted-foreground mt-1">
-            Choose a GitHub repo or upload a local Paperclip zip package.
+            {bootstrapMode
+              ? "Start a new company from a prepared Paperclip docs/repo package. This uses the existing import preview before anything is applied."
+              : "Choose a GitHub repo or upload a local Paperclip zip package."}
           </p>
         </div>
+
+        {bootstrapMode && (
+          <div className="rounded-md border border-border bg-accent/30 px-3 py-2 text-xs text-muted-foreground">
+            Use this when you already have prepared company-package content such as `COMPANY.md`, agent docs, and related project files. It does not turn an arbitrary repo into a company automatically.
+          </div>
+        )}
 
         <div className="grid gap-2 md:grid-cols-2">
           {(
@@ -1178,7 +1195,10 @@ export function CompanyImport() {
           </Field>
         )}
 
-        <Field label="Target" hint="Import into this company or create a new one.">
+        <Field
+          label={bootstrapMode ? "Bootstrap target" : "Target"}
+          hint={bootstrapMode ? "Bootstrap defaults to a new company, but you can still import into the selected company if needed." : "Import into this company or create a new one."}
+        >
           <select
             className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
             value={targetMode}
@@ -1187,9 +1207,9 @@ export function CompanyImport() {
               setImportPreview(null);
             }}
           >
-            <option value="new">Create new company</option>
+            <option value="new">{bootstrapMode ? "Bootstrap a new company" : "Create new company"}</option>
             <option value="existing">
-              Existing company: {selectedCompany?.name}
+              Existing company: {selectedCompany?.name ?? "Select a company first"}
             </option>
           </select>
         </Field>
@@ -1197,7 +1217,7 @@ export function CompanyImport() {
         {targetMode === "new" && (
           <Field
             label="New company name"
-            hint="Optional override. Leave blank to use the package name."
+            hint={bootstrapMode ? "Optional override. Leave blank to use the package/repo name for the new company." : "Optional override. Leave blank to use the package name."}
           >
             <input
               className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
@@ -1211,7 +1231,7 @@ export function CompanyImport() {
 
         <Field
           label="Collision strategy"
-          hint="Board imports can rename, skip, or replace matching company content."
+          hint={bootstrapMode ? "Usually only matters if you switch this flow to an existing-company import." : "Board imports can rename, skip, or replace matching company content."}
         >
           <select
             className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
@@ -1234,7 +1254,7 @@ export function CompanyImport() {
             onClick={() => previewMutation.mutate()}
             disabled={previewMutation.isPending || !hasSource}
           >
-            {previewMutation.isPending ? "Previewing..." : "Preview import"}
+            {previewMutation.isPending ? "Previewing..." : bootstrapMode ? "Preview bootstrap" : "Preview import"}
           </Button>
         </div>
       </div>

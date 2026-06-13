@@ -1,4 +1,4 @@
-import { Navigate, Outlet, Route, Routes, useLocation, useParams } from "@/lib/router";
+import { Link, Navigate, Outlet, Route, Routes, useLocation, useParams } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { useTranslation } from "@/i18n";
 import { Layout } from "./components/Layout";
@@ -257,15 +257,27 @@ function OnboardingRoutePage() {
         <h1 className="text-xl font-semibold">{title}</h1>
         <p className="mt-2 text-sm text-muted-foreground">{description}</p>
         <div className="mt-4">
-          <Button
-            onClick={() =>
-              matchedCompany
-                ? openOnboarding({ initialStep: 2, companyId: matchedCompany.id })
-                : openOnboarding()
-            }
-          >
-            {matchedCompany ? "Add Agent" : "Start Onboarding"}
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              onClick={() =>
+                matchedCompany
+                  ? openOnboarding({ initialStep: 2, companyId: matchedCompany.id })
+                  : openOnboarding()
+              }
+            >
+              {matchedCompany ? "Add Agent" : "Start Onboarding"}
+            </Button>
+            {!matchedCompany && (
+              <Button asChild variant="outline">
+                <Link to="/company/import?entry=bootstrap">Bootstrap From Docs/Repo</Link>
+              </Button>
+            )}
+          </div>
+          {!matchedCompany && (
+            <p className="mt-3 text-xs text-muted-foreground">
+              Use bootstrap when you already have a prepared Paperclip company package in a repo or zip file.
+            </p>
+          )}
         </div>
       </div>
     </div>

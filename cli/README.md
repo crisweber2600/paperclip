@@ -294,6 +294,41 @@ npx paperclipai onboard --yes --bind tailnet
 
 If you already have Paperclip configured, rerunning `onboard` keeps the existing config in place. Use `paperclipai configure` to edit settings.
 
+## Company package bootstrap
+
+To bootstrap a new company from prepared docs or a repo, use the existing company portability path rather than bespoke scaffolding.
+
+The supported package shape is markdown-first:
+
+- `COMPANY.md` at the package root
+- optional `.paperclip.yaml` sidecar for Paperclip-specific fidelity
+- optional conventional folders like `agents/<slug>/AGENTS.md`, `projects/<slug>/PROJECT.md`, `projects/<slug>/tasks/<slug>/TASK.md`, `tasks/<slug>/TASK.md`, and `skills/<slug>/SKILL.md`
+
+Supported import sources:
+
+- a local folder containing that package
+- a local `.zip` package, including output from `paperclipai company export`
+- a GitHub repo or subfolder, via URL or `owner/repo[/path]` shorthand
+
+Recommended operator flow:
+
+```bash
+# 1) Preview the prepared package locally
+paperclipai company import ./prepared-company --dry-run
+
+# 2) Create a new company from it
+paperclipai company import ./prepared-company --target new --yes
+
+# 3) Or preview importing a GitHub package into an existing company
+paperclipai company import paperclipai/companies/demo \
+  --ref main \
+  --target existing \
+  -C <company-id> \
+  --dry-run
+```
+
+Use `--dry-run` first whenever you want to inspect what will be created, renamed, skipped, or replaced. Pin GitHub imports with `--ref` so the import stays reproducible.
+
 Or manually:
 
 ```bash

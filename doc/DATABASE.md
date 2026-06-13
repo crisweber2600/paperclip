@@ -143,6 +143,18 @@ The database mode is controlled by `DATABASE_URL`:
 
 Your Drizzle schema (`packages/db/src/schema/`) stays the same regardless of mode.
 
+## Goal state and review fields
+
+The `goals` table stores more than title/status hierarchy. In addition to the core goal identity fields, persisted goal state includes:
+
+- `acceptance_criteria` as JSON
+- latest review verdict fields (`last_verdict`, `last_verdict_reason`, `last_verdict_at`, `last_verdict_by_agent_id`)
+- `verdict_streak`
+- pause metadata (`pause_reason`, `paused_at`)
+- normal audit timestamps (`created_at`, `updated_at`)
+
+Execution-path counts such as open linked issues/projects and derived flags such as `needsPlanning` are operator/API view fields computed by the server, not extra database columns.
+
 ## Resource membership tables
 
 Paperclip stores current-user sidebar membership state in:

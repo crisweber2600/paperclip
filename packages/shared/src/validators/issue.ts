@@ -28,6 +28,10 @@ import {
   REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT,
 } from "../constants.js";
 import { multilineTextSchema } from "./text.js";
+import {
+  acceptanceEvidenceEntryListSchema,
+  governingArtifactReferenceListSchema,
+} from "./governing-artifact.js";
 import { lowTrustReviewPresetPolicySchema, trustAuthorizationPolicySchema } from "./trust-policy.js";
 
 export const issueBlockedInboxStateSchema = z.enum([
@@ -393,6 +397,8 @@ const createIssueBaseSchema = z.object({
   executionWorkspaceId: z.string().uuid().optional().nullable(),
   executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),
   executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
+  governingArtifacts: governingArtifactReferenceListSchema.optional().nullable(),
+  acceptanceEvidence: acceptanceEvidenceEntryListSchema.optional().nullable(),
   labelIds: z.array(z.string().uuid()).optional(),
 });
 
@@ -701,6 +707,12 @@ export const requestConfirmationIssueDocumentTargetSchema = requestConfirmationT
   revisionNumber: z.number().int().positive().nullable().optional(),
 });
 
+export const requestConfirmationIssueWorkProductTargetSchema = requestConfirmationTargetBaseSchema.extend({
+  type: z.literal("issue_work_product"),
+  issueId: z.string().uuid().nullable().optional(),
+  workProductId: z.string().uuid(),
+});
+
 export const requestConfirmationCustomTargetSchema = requestConfirmationTargetBaseSchema.extend({
   type: z.literal("custom"),
   key: z.string().trim().min(1).max(120),
@@ -710,6 +722,7 @@ export const requestConfirmationCustomTargetSchema = requestConfirmationTargetBa
 
 export const requestConfirmationTargetSchema = z.discriminatedUnion("type", [
   requestConfirmationIssueDocumentTargetSchema,
+  requestConfirmationIssueWorkProductTargetSchema,
   requestConfirmationCustomTargetSchema,
 ]);
 

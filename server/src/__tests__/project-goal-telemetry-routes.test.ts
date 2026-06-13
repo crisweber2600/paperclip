@@ -13,6 +13,8 @@ const mockProjectService = vi.hoisted(() => ({
 const mockGoalService = vi.hoisted(() => ({
   list: vi.fn(),
   getById: vi.fn(),
+  listOperatorView: vi.fn(),
+  getOperatorById: vi.fn(),
   create: vi.fn(),
   update: vi.fn(),
   remove: vi.fn(),
@@ -140,6 +142,28 @@ describe("project and goal telemetry routes", () => {
       level: "team",
       status: "planned",
     });
+    mockGoalService.getOperatorById.mockResolvedValue({
+      id: "goal-1",
+      companyId: "company-1",
+      title: "Telemetry goal",
+      description: null,
+      level: "team",
+      status: "planned",
+      parentId: null,
+      ownerAgentId: null,
+      acceptanceCriteria: [],
+      lastVerdict: null,
+      lastVerdictReason: null,
+      lastVerdictAt: null,
+      lastVerdictByAgentId: null,
+      verdictStreak: 0,
+      pauseReason: null,
+      pausedAt: null,
+      createdAt: new Date("2026-06-13T18:00:00.000Z"),
+      updatedAt: new Date("2026-06-13T18:00:00.000Z"),
+      executionPath: { openIssueCount: 0, openProjectCount: 0, hasExecutionPath: false },
+      needsPlanning: false,
+    });
     mockLogActivity.mockResolvedValue(undefined);
   });
 
@@ -161,5 +185,65 @@ describe("project and goal telemetry routes", () => {
 
     expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
     expect(mockTelemetryTrack).toHaveBeenCalledWith("goal.created", { goal_level: "team" });
+  });
+
+  it("returns execution-path state on operator goal routes", async () => {
+    mockGoalService.listOperatorView.mockResolvedValue([
+      {
+        id: "goal-1",
+        companyId: "company-1",
+        title: "Execution path visible",
+        description: null,
+        level: "team",
+        status: "active",
+        parentId: null,
+        ownerAgentId: null,
+        acceptanceCriteria: [],
+        lastVerdict: null,
+        lastVerdictReason: null,
+        lastVerdictAt: null,
+        lastVerdictByAgentId: null,
+        verdictStreak: 0,
+        pauseReason: null,
+        pausedAt: null,
+        createdAt: new Date("2026-06-13T18:00:00.000Z"),
+        updatedAt: new Date("2026-06-13T18:00:00.000Z"),
+        executionPath: { openIssueCount: 0, openProjectCount: 1, hasExecutionPath: true },
+        needsPlanning: false,
+      },
+    ]);
+    mockGoalService.getOperatorById.mockResolvedValue({
+      id: "goal-1",
+      companyId: "company-1",
+      title: "Execution path visible",
+      description: null,
+      level: "team",
+      status: "active",
+      parentId: null,
+      ownerAgentId: null,
+      acceptanceCriteria: [],
+      lastVerdict: null,
+      lastVerdictReason: null,
+      lastVerdictAt: null,
+      lastVerdictByAgentId: null,
+      verdictStreak: 0,
+      pauseReason: null,
+      pausedAt: null,
+      createdAt: new Date("2026-06-13T18:00:00.000Z"),
+      updatedAt: new Date("2026-06-13T18:00:00.000Z"),
+      executionPath: { openIssueCount: 0, openProjectCount: 1, hasExecutionPath: true },
+      needsPlanning: false,
+    });
+
+    const app = await createApp("goal");
+    const listRes = await request(app).get("/api/companies/company-1/goals");
+    const detailRes = await request(app).get("/api/goals/goal-1");
+
+    expect(listRes.status).toBe(200);
+    expect(listRes.body[0]?.executionPath?.openProjectCount).toBe(1);
+    expect(listRes.body[0]?.needsPlanning).toBe(false);
+
+    expect(detailRes.status).toBe(200);
+    expect(detailRes.body.executionPath?.hasExecutionPath).toBe(true);
   });
 });

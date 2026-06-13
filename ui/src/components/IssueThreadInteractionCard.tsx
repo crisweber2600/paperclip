@@ -1024,9 +1024,15 @@ function AskUserQuestionsCard({
 
 function requestConfirmationTargetLabel(target: RequestConfirmationTarget) {
   if (target.label) return target.label;
-  const revision = target.revisionNumber ? ` v${target.revisionNumber}` : "";
+  const revision = target.type === "issue_document" && target.revisionNumber ? ` v${target.revisionNumber}` : "";
   if (target.type === "issue_document" && target.key === "plan") {
     return `Plan${revision}`;
+  }
+  if (target.type === "issue_document") {
+    return `${target.key}${revision}`;
+  }
+  if (target.type === "issue_work_product") {
+    return `Work product`;
   }
   return `${target.key}${revision}`;
 }

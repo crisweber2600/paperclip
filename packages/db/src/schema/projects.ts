@@ -18,6 +18,8 @@ export const projects = pgTable(
     color: text("color"),
     icon: text("icon"),
     env: jsonb("env").$type<AgentEnvConfig>(),
+    governingArtifacts: jsonb("governing_artifacts").$type<Record<string, unknown>[] | null>(),
+    acceptanceEvidence: jsonb("acceptance_evidence").$type<Record<string, unknown>[] | null>(),
     pauseReason: text("pause_reason"),
     pausedAt: timestamp("paused_at", { withTimezone: true }),
     executionWorkspacePolicy: jsonb("execution_workspace_policy").$type<Record<string, unknown>>(),

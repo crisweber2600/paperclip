@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { getGoalAncestors, MAX_GOAL_ANCESTOR_DEPTH } from "../services/goals.js";
+import { getGoalAncestors, goalService, MAX_GOAL_ANCESTOR_DEPTH } from "../services/goals.js";
 import {
   DEFAULT_GOAL_REVIEW_INTERVAL_HOURS,
+  DEFAULT_GOAL_REVIEW_MAX_VERDICT_STREAK,
+  DEFAULT_GOAL_REVIEW_STALLED_INTERVAL_HOURS,
   goalReviewService,
+  isAttentionGoal,
   isGoalReviewDue,
   parseGoalReviewRuntimeState,
 } from "../services/goal-review.js";
@@ -11,8 +14,11 @@ import {
 // matter how the chain (from/where/groupBy/innerJoin/orderBy) is composed.
 function fakeDb(queues: unknown[][]) {
   let call = 0;
+  const updateSets: Record<string, unknown>[] = [];
+  const updateResults = [...queues];
   const db = {
     selectCallCount: () => call,
+    updateSets,
     select: () => {
       const result = queues[call] ?? [];
       call += 1;
@@ -24,6 +30,20 @@ function fakeDb(queues: unknown[][]) {
         Promise.resolve(result).then(resolve, reject);
       return chain;
     },
+    update: () => ({
+      set: (values: Record<string, unknown>) => {
+        updateSets.push(values);
+        const result = updateResults[call] ?? [];
+        call += 1;
+        return {
+          where: () => ({
+            returning: () => ({
+              then: (resolve: (value: unknown) => unknown) => Promise.resolve(result).then(resolve),
+            }),
+          }),
+        };
+      },
+    }),
   };
   return db;
 }
@@ -38,6 +58,14 @@ function goalRow(overrides: Partial<Record<string, unknown>> = {}) {
     status: "active",
     parentId: null,
     ownerAgentId: "agent-1",
+    acceptanceCriteria: [],
+    lastVerdict: null,
+    lastVerdictReason: null,
+    lastVerdictAt: null,
+    lastVerdictByAgentId: null,
+    verdictStreak: 0,
+    pauseReason: null,
+    pausedAt: null,
     createdAt: new Date("2026-01-01T00:00:00Z"),
     updatedAt: new Date("2026-01-01T00:00:00Z"),
     ...overrides,
@@ -116,6 +144,17 @@ describe("parseGoalReviewRuntimeState", () => {
       lastCheckedAt: "2026-06-09T08:00:00Z",
     });
   });
+
+  it("parses the numeric attentionGoalCount and rejects non-numeric values", () => {
+    expect(
+      parseGoalReviewRuntimeState({
+        goalReview: { lastCheckedAt: "2026-06-09T08:00:00Z", attentionGoalCount: 2 },
+      }),
+    ).toEqual({ lastCheckedAt: "2026-06-09T08:00:00Z", attentionGoalCount: 2 });
+    expect(
+      parseGoalReviewRuntimeState({ goalReview: { attentionGoalCount: "2" } }),
+    ).toEqual({});
+  });
 });
 
 describe("isGoalReviewDue", () => {
@@ -166,6 +205,117 @@ describe("isGoalReviewDue", () => {
     expect(
       isGoalReviewDue({ state: { lastEvaluatedAt: recent.toISOString() }, now }),
     ).toBe(false);
+  });
+
+  it("tightens the cadence when attention goals are pending", () => {
+    // 2h since last review: not due at the normal 4h interval, but due at the
+    // stalled 1h interval when attentionGoalCount > 0.
+    const twoHoursAgo = new Date(now.getTime() - 2 * 60 * 60 * 1000).toISOString();
+    expect(
+      isGoalReviewDue({ state: { lastEvaluatedAt: twoHoursAgo, attentionGoalCount: 0 }, now }),
+    ).toBe(false);
+    expect(
+      isGoalReviewDue({ state: { lastEvaluatedAt: twoHoursAgo, attentionGoalCount: 1 }, now }),
+    ).toBe(true);
+    const withinStalledInterval = new Date(
+      now.getTime() - (DEFAULT_GOAL_REVIEW_STALLED_INTERVAL_HOURS * 60 * 60 * 1000) / 2,
+    ).toISOString();
+    expect(
+      isGoalReviewDue({ state: { lastEvaluatedAt: withinStalledInterval, attentionGoalCount: 1 }, now }),
+    ).toBe(false);
+  });
+});
+
+describe("isAttentionGoal", () => {
+  it("flags stalled/blocked goals under the streak cap and nothing else", () => {
+    expect(isAttentionGoal({ lastVerdict: "stalled", verdictStreak: 1 })).toBe(true);
+    expect(isAttentionGoal({ lastVerdict: "blocked", verdictStreak: 2 })).toBe(true);
+    expect(isAttentionGoal({ lastVerdict: "progressing", verdictStreak: 1 })).toBe(false);
+    expect(isAttentionGoal({ lastVerdict: "done", verdictStreak: 1 })).toBe(false);
+    expect(isAttentionGoal({ lastVerdict: null, verdictStreak: 0 })).toBe(false);
+    expect(
+      isAttentionGoal({ lastVerdict: "stalled", verdictStreak: DEFAULT_GOAL_REVIEW_MAX_VERDICT_STREAK }),
+    ).toBe(false);
+  });
+});
+
+describe("goalReviewService.buildGoalReviewWakeSummary", () => {
+  it("lists attention goals and excludes those at the streak cap", async () => {
+    const ownedGoals = [
+      goalRow({ id: "11111111-1111-4111-8111-111111111111", title: "Stalled goal", lastVerdict: "stalled", verdictStreak: 2 }),
+      goalRow({
+        id: "22222222-2222-4222-8222-222222222222",
+        title: "Exhausted goal",
+        lastVerdict: "stalled",
+        verdictStreak: DEFAULT_GOAL_REVIEW_MAX_VERDICT_STREAK,
+      }),
+      goalRow({ id: "33333333-3333-4333-8333-333333333333", title: "Progressing goal", lastVerdict: "progressing", verdictStreak: 1 }),
+    ];
+    const db = fakeDb([
+      ownedGoals, // listActiveOwnedByAgent
+      [], // open issues grouped by goal
+      [], // legacy project links
+      [], // project_goals links
+    ]);
+    const summary = await goalReviewService(db as never).buildGoalReviewWakeSummary({
+      id: "agent-1",
+      companyId: "company-1",
+      role: "ceo",
+    });
+
+    expect(summary).not.toBeNull();
+    expect(summary?.attentionGoalCount).toBe(1);
+    expect(summary?.attentionGoals).toEqual([
+      { id: "11111111-1111-4111-8111-111111111111", title: "Stalled goal", lastVerdict: "stalled", verdictStreak: 2 },
+    ]);
+    expect(summary?.goalsWithoutExecutionPathCount).toBe(3);
+  });
+});
+
+describe("goalService.recordVerdict", () => {
+  it("increments the streak on a repeated verdict", async () => {
+    const existing = goalRow({ lastVerdict: "stalled", verdictStreak: 2 });
+    const db = fakeDb([[{ ...existing, lastVerdict: "stalled", verdictStreak: 3 }]]);
+    const updated = await goalService(db as never).recordVerdict("goal-1", {
+      verdict: "stalled",
+      reason: "still no movement",
+      byAgentId: "agent-1",
+    });
+    const updateSet = (db as { updateSets: Record<string, unknown>[] }).updateSets[0];
+    expect(updateSet).toEqual(
+      expect.objectContaining({
+        lastVerdict: "stalled",
+        lastVerdictReason: "still no movement",
+        lastVerdictByAgentId: "agent-1",
+      }),
+    );
+    // verdictStreak is a SQL expression for atomic update — verify it is not a plain number
+    expect(typeof updateSet.verdictStreak).not.toBe("number");
+    expect(updated).toEqual(expect.objectContaining({ verdictStreak: 3 }));
+  });
+
+  it("resets the streak when the verdict changes", async () => {
+    const existing = goalRow({ lastVerdict: "stalled", verdictStreak: 4 });
+    const db = fakeDb([[{ ...existing, lastVerdict: "progressing", verdictStreak: 1 }]]);
+    await goalService(db as never).recordVerdict("goal-1", {
+      verdict: "progressing",
+      reason: "issue moving again",
+      byAgentId: "agent-1",
+    });
+    const updateSet = (db as { updateSets: Record<string, unknown>[] }).updateSets[0];
+    // verdictStreak is a SQL expression for atomic update — verify it is not a plain number
+    expect(typeof updateSet.verdictStreak).not.toBe("number");
+  });
+
+  it("returns null for a missing goal", async () => {
+    const db = fakeDb([[]]);
+    expect(
+      await goalService(db as never).recordVerdict("missing", {
+        verdict: "done",
+        reason: "n/a",
+        byAgentId: "agent-1",
+      }),
+    ).toBeNull();
   });
 });
 

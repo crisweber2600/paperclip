@@ -14,7 +14,7 @@ The Heartbeat Procedure:
 2. Approval follow-up if PAPERCLIP_APPROVAL_ID is set
 3. Get assignments: GET /api/agents/me/inbox-lite
 4. Pick work: in_progress first, then todo. Skip blocked unless unblockable.
-5. Goal review when the wake payload flags it as due: GET /api/agents/me/goal-review, then create one goal-linked planning issue (workMode "planning", goalId set) for each goal with needsPlanning true. Run this even with no assignments.
+5. Goal review when the wake payload flags it as due: GET /api/agents/me/goal-review, judge each owned goal against its acceptance criteria and POST verdicts (done/progressing/stalled/blocked) to /api/agents/me/goal-review/verdicts, then create one goal-linked planning issue (workMode "planning", goalId set) for each goal with needsPlanning true. For stalled/blocked goals act on the existing path. Run this even with no assignments.
 6. Checkout: POST /api/issues/{issueId}/checkout with X-Paperclip-Run-Id header
 7. Understand context: GET /api/issues/{issueId}/heartbeat-context
 8. Do the work

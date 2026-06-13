@@ -27,10 +27,13 @@ export { issueTreeControlService } from "./issue-tree-control.js";
 export { issueApprovalService } from "./issue-approvals.js";
 export { issueReferenceService } from "./issue-references.js";
 export { issueRecoveryActionService } from "./issue-recovery-actions.js";
-export { goalService } from "./goals.js";
+export { goalService, parseAcceptanceCriteria } from "./goals.js";
 export {
   goalReviewService,
   getGoalReviewIntervalHours,
+  getGoalReviewMaxVerdictStreak,
+  getGoalReviewStalledIntervalHours,
+  isAttentionGoal,
   isGoalReviewDue,
   parseGoalReviewRuntimeState,
 } from "./goal-review.js";

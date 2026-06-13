@@ -292,6 +292,31 @@ describe("IssueThreadInteractionCard", () => {
     expect(host.textContent).not.toContain("Approve plan");
   });
 
+  it("renders work product target links for proposal review confirmations", () => {
+    const host = renderCard({
+      interaction: {
+        ...pendingRequestConfirmationInteraction,
+        payload: {
+          ...pendingRequestConfirmationInteraction.payload,
+          target: {
+            type: "issue_work_product",
+            issueId: pendingRequestConfirmationInteraction.issueId,
+            workProductId: "product-routine-proposal",
+            label: "Routine proposal artifact",
+          },
+        },
+      },
+    });
+
+    const targetLink = Array.from(host.querySelectorAll("a")).find((link) =>
+      link.textContent?.includes("Routine proposal artifact"),
+    );
+
+    expect(targetLink?.getAttribute("href")).toBe(
+      "/issues/issue-thread-interactions#work-product-product-routine-proposal",
+    );
+  });
+
   it("renders a jump link for confirmations expired by comment", () => {
     const host = renderCard({
       interaction: commentExpiredRequestConfirmationInteraction,

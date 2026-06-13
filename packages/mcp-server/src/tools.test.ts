@@ -68,6 +68,26 @@ describe("paperclip MCP tools", () => {
     expect(response.content[0]?.text).toContain("agent-1");
   });
 
+  it("posts goal verdicts for the authenticated agent", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({ recordedCount: 1, attentionGoalCount: 1 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipGoalVerdict");
+    await tool.execute({
+      verdicts: [{ goalId: "goal-1", verdict: "stalled", reason: "no movement" }],
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe("http://localhost:3100/api/agents/me/goal-review/verdicts");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toEqual({
+      verdicts: [{ goalId: "goal-1", verdict: "stalled", reason: "no movement" }],
+    });
+  });
+
   it("uses default company id for company-scoped list tools", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       mockJsonResponse([{ id: "issue-1" }]),

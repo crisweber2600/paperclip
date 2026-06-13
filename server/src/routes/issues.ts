@@ -7,6 +7,7 @@ import type { Db } from "@paperclipai/db";
 import {
   activityLog,
   agents,
+  documentRevisions,
   documents,
   executionWorkspaces,
   heartbeatRuns,
@@ -25,8 +26,11 @@ import {
   cancelIssueThreadInteractionSchema,
   companySearchQuerySchema,
   createIssueAttachmentMetadataSchema,
+  generateDocsToRoutinesProposalSchema,
+  requestDocsToRoutinesProposalReviewSchema,
   createIssueThreadInteractionSchema,
   createIssueWorkProductSchema,
+  applyRoutineProposalSchema,
   createIssueLabelSchema,
   createAcceptedPlanDecompositionSchema,
   checkoutIssueSchema,
@@ -57,7 +61,10 @@ import {
   type CompanySearchQuery,
   type CompanySearchResponse,
   type ExecutionWorkspace,
+  type AcceptanceEvidenceEntry,
+  type GoverningArtifactReference,
   type IssueRelationIssueSummary,
+  type RequestConfirmationTarget,
   type SourceTrustMetadata,
   type SuccessfulRunHandoffState,
 } from "@paperclipai/shared";
@@ -111,6 +118,7 @@ import { feedbackService } from "../services/feedback.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { readAcceptedPlanConfirmationTarget } from "../services/issues.js";
 import { environmentService } from "../services/environments.js";
+import { routineProposalReconciliationService } from "../services/routine-proposal-reconciliation.js";
 import { redactSensitiveText } from "../redaction.js";
 import {
   createCompanySearchRateLimiter,
@@ -216,6 +224,138 @@ function applyCreateIssueStatusDefault(req: Request, res: Response, next: () => 
 
 function buildAttachmentContentPath(attachmentId: string): string {
   return `/api/attachments/${attachmentId}/content`;
+}
+
+function slugifyDocsToRoutinesTitle(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "routine-proposal";
+}
+
+function stableProposalKey(value: string, fallback: string): string {
+  const slug = slugifyDocsToRoutinesTitle(value);
+  return slug || fallback;
+}
+
+function buildDocsToRoutinesProposalArtifact(input: {
+  issue: Awaited<ReturnType<ReturnType<typeof issueService>["getById"]>>;
+  sourceDocuments: Array<{ key: string; title: string | null; latestRevisionId: string | null; body: string; updatedAt: Date | string }>;
+  sourceWorkProducts: Array<{ id: string; title: string; summary: string | null; metadata: Record<string, unknown> | null }>;
+  sourceAttachments: Array<{ id: string; originalFilename: string | null; contentType: string; contentPath: string }>;
+  agents: Array<{ id: string; name: string; title: string | null; role: string; reportsTo: string | null; status: string }>;
+  projects: Array<{ id: string; name: string; status: string }>;
+  goals: Array<{ id: string; title: string; status: string }>;
+  operatorPrompt: string | null;
+  defaults: { concurrencyPolicy: "coalesce_if_active" | "always_enqueue" | "skip_if_active"; catchUpPolicy: "skip_missed" | "enqueue_missed_with_cap"; timezone: string };
+}) {
+  const sourceRefs = {
+    documents: input.sourceDocuments.map((doc) => ({ key: doc.key, revisionId: doc.latestRevisionId })),
+    workProducts: input.sourceWorkProducts.map((product) => ({ id: product.id })),
+    attachments: input.sourceAttachments.map((attachment) => ({ id: attachment.id })),
+  };
+
+  const proposals: Array<Record<string, unknown>> = [];
+  const rejections: Array<Record<string, string>> = [];
+  const openQuestions = new Set<string>();
+
+  const projectById = new Map(input.projects.map((project) => [project.id, project]));
+  const goalById = new Map(input.goals.map((goal) => [goal.id, goal]));
+  const activeAgents = input.agents.filter((agent) => agent.status === "active");
+
+  const mentionText = [
+    ...input.sourceDocuments.map((doc) => doc.body),
+    ...input.sourceWorkProducts.map((product) => `${product.title}\n${product.summary ?? ""}`),
+    input.operatorPrompt ?? "",
+  ].join("\n\n");
+
+  const mentionedAgentIds = Array.from(new Set((mentionText.match(/agent:\/\/[^)\s]+/g) ?? []).map((value) => value.replace("agent://", ""))));
+  const mentionedProjectIds = Array.from(new Set((mentionText.match(/project:\/\/[^)\s]+/g) ?? []).map((value) => value.replace("project://", ""))));
+  const mentionedGoalIds = Array.from(new Set((mentionText.match(/goal:\/\/[^)\s]+/g) ?? []).map((value) => value.replace("goal://", ""))));
+
+  const fallbackProjectId = input.issue?.projectId ?? mentionedProjectIds.find((id) => projectById.has(id)) ?? input.projects[0]?.id ?? null;
+  const fallbackGoalId = input.issue?.goalId ?? mentionedGoalIds.find((id) => goalById.has(id)) ?? null;
+
+  for (const agent of activeAgents) {
+    const titleText = `${agent.title ?? ""} ${agent.role}`.toLowerCase();
+    const sourceDoc = input.sourceDocuments.find((doc) => doc.body.toLowerCase().includes(agent.name.toLowerCase()))
+      ?? input.sourceDocuments.find((doc) => doc.body.toLowerCase().includes(titleText.trim()));
+    if (!sourceDoc) continue;
+
+    const purpose = `Review and act on process obligations referenced for ${agent.name}.`;
+    const warningList: string[] = [];
+    const projectId = mentionedProjectIds.find((id) => projectById.has(id)) ?? fallbackProjectId;
+    if (!projectId) {
+      warningList.push("No owning project could be resolved from the selected corpus.");
+      openQuestions.add(`Which project should own ${agent.name}'s routine?`);
+    }
+    const goalId = mentionedGoalIds.find((id) => goalById.has(id)) ?? fallbackGoalId;
+    const cronExpression = /weekly|every week|monday/i.test(sourceDoc.body)
+      ? "0 14 * * 1"
+      : /daily|each day|every day/i.test(sourceDoc.body)
+        ? "0 14 * * *"
+        : null;
+    if (!cronExpression) {
+      warningList.push("Cadence was ambiguous in the selected corpus.");
+      openQuestions.add(`What cadence should Paperclip use for ${agent.name}'s routine?`);
+    }
+
+    proposals.push({
+      proposalKey: stableProposalKey(`${agent.name}-${sourceDoc.key}`, agent.id),
+      title: `${agent.name} routine proposal`,
+      purpose,
+      assigneeAgentId: agent.id,
+      projectId,
+      goalId,
+      parentIssueId: input.issue?.id ?? null,
+      priority: input.issue?.priority ?? "medium",
+      schedule: cronExpression
+        ? {
+            kind: "schedule",
+            cronExpression,
+            timezone: input.defaults.timezone,
+          }
+        : {
+            kind: "schedule",
+            cronExpression: null,
+            timezone: input.defaults.timezone,
+          },
+      variables: [],
+      env: {},
+      concurrencyPolicy: input.defaults.concurrencyPolicy,
+      catchUpPolicy: input.defaults.catchUpPolicy,
+      expectedOutputs: ["issue comment", "follow-up execution issue when warranted"],
+      wakeContract: {
+        onTrigger: "create_or_reuse_execution_issue",
+        onOverlap: input.defaults.concurrencyPolicy === "always_enqueue" ? "create_distinct_issue" : "coalesce_into_live_issue",
+        onPausedProject: "skip_without_backfill",
+        onManualRun: "touch_existing_issue_for_requesting_user_if_reused",
+      },
+      rationale: `Derived from issue document '${sourceDoc.key}' revision '${sourceDoc.latestRevisionId ?? "unversioned"}'.`,
+      sourceReferences: [{ kind: "document_revision", key: sourceDoc.key, revisionId: sourceDoc.latestRevisionId }],
+      warnings: warningList,
+    });
+  }
+
+  if (proposals.length === 0) {
+    rejections.push({
+      sourceClaim: "selected corpus",
+      reason: "No routine candidates could be mapped to an active agent with explicit source support.",
+    });
+    openQuestions.add("Which agent or operating cadence should the selected corpus map to?");
+  }
+
+  return {
+    version: 1,
+    companyId: input.issue?.companyId ?? null,
+    generatedAt: new Date().toISOString(),
+    sourceCorpus: sourceRefs,
+    defaults: input.defaults,
+    proposals,
+    rejections,
+    openQuestions: Array.from(openQuestions),
+  };
 }
 
 const GENERIC_ATTACHMENT_CONTENT_TYPES = new Set([
@@ -1053,6 +1193,7 @@ export function issueRoutes(
   const routinesSvc = routineService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
   });
+  const routineProposalSvc = routineProposalReconciliationService(db, storage);
   const issueTreeControlFactory = Object.prototype.hasOwnProperty.call(
     serviceIndex,
     "issueTreeControlService",
@@ -1268,6 +1409,73 @@ export function issueRoutes(
       .where(and(eq(issueWorkProducts.id, input.artifactId), eq(issueWorkProducts.issueId, input.issueId)))
       .then((rows) => rows[0] ?? null);
     return row?.sourceTrust ?? null;
+  }
+
+  async function assertIssueGoverningArtifactsCompanyScoped(
+    issue: { id: string; companyId: string },
+    governingArtifacts: GoverningArtifactReference[] | null | undefined,
+  ) {
+    if (!governingArtifacts || governingArtifacts.length === 0 || !issue.id) return;
+    for (const reference of governingArtifacts) {
+      if (reference.kind === "document_revision") {
+        const row = await db
+          .select({ id: documents.id })
+          .from(issueDocuments)
+          .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
+          .innerJoin(documentRevisions, eq(documentRevisions.documentId, documents.id))
+          .where(and(
+            eq(issueDocuments.companyId, issue.companyId),
+            eq(issueDocuments.issueId, issue.id),
+            eq(documentRevisions.companyId, issue.companyId),
+            eq(documentRevisions.id, reference.revisionId ?? reference.artifactId),
+          ))
+          .then((rows) => rows[0] ?? null);
+        if (!row) throw unprocessable("Governing artifact must reference a document revision on the same issue", { code: "invalid_governing_artifact", artifactId: reference.artifactId });
+        continue;
+      }
+      const row = await db
+        .select({ id: issueWorkProducts.id })
+        .from(issueWorkProducts)
+        .where(and(eq(issueWorkProducts.companyId, issue.companyId), eq(issueWorkProducts.issueId, issue.id), eq(issueWorkProducts.id, reference.workProductId ?? reference.artifactId)))
+        .then((rows) => rows[0] ?? null);
+      if (!row) throw unprocessable("Governing artifact must reference a work product on the same issue", { code: "invalid_governing_artifact", artifactId: reference.artifactId });
+    }
+  }
+
+  async function assertIssueAcceptanceEvidenceCompanyScoped(
+    issue: { id: string; companyId: string },
+    acceptanceEvidence: AcceptanceEvidenceEntry[] | null | undefined,
+  ) {
+    if (!acceptanceEvidence || acceptanceEvidence.length === 0 || !issue.id) return;
+    for (const evidence of acceptanceEvidence) {
+      if (evidence.kind === "comment") {
+        const row = await db.select({ id: issueComments.id }).from(issueComments)
+          .where(and(eq(issueComments.companyId, issue.companyId), eq(issueComments.issueId, issue.id), eq(issueComments.id, evidence.artifactId)))
+          .then((rows) => rows[0] ?? null);
+        if (!row) throw unprocessable("Acceptance evidence comment must belong to the same issue", { code: "invalid_acceptance_evidence", artifactId: evidence.artifactId });
+        continue;
+      }
+      if (evidence.kind === "issue") {
+        const row = await db.select({ id: issueRows.id }).from(issueRows)
+          .where(and(eq(issueRows.companyId, issue.companyId), eq(issueRows.id, evidence.artifactId)))
+          .then((rows) => rows[0] ?? null);
+        if (!row) throw unprocessable("Acceptance evidence issue must belong to the same company", { code: "invalid_acceptance_evidence", artifactId: evidence.artifactId });
+        continue;
+      }
+      if (evidence.kind === "document_revision") {
+        const row = await db.select({ id: documents.id }).from(issueDocuments)
+          .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
+          .innerJoin(documentRevisions, eq(documentRevisions.documentId, documents.id))
+          .where(and(eq(issueDocuments.companyId, issue.companyId), eq(issueDocuments.issueId, issue.id), eq(documentRevisions.companyId, issue.companyId), eq(documentRevisions.id, evidence.artifactId)))
+          .then((rows) => rows[0] ?? null);
+        if (!row) throw unprocessable("Acceptance evidence document revision must belong to the same issue", { code: "invalid_acceptance_evidence", artifactId: evidence.artifactId });
+        continue;
+      }
+      const row = await db.select({ id: issueWorkProducts.id }).from(issueWorkProducts)
+        .where(and(eq(issueWorkProducts.companyId, issue.companyId), eq(issueWorkProducts.issueId, issue.id), eq(issueWorkProducts.id, evidence.artifactId)))
+        .then((rows) => rows[0] ?? null);
+      if (!row) throw unprocessable("Acceptance evidence work product must belong to the same issue", { code: "invalid_acceptance_evidence", artifactId: evidence.artifactId });
+    }
   }
 
   async function cancelScheduledRetrySupersededByComment(input: {
@@ -1773,15 +1981,7 @@ export function issueRoutes(
 
   async function decideIssueAccess(
     req: Request,
-    issue: {
-      id: string;
-      companyId: string;
-      projectId: string | null;
-      parentId: string | null;
-      assigneeAgentId: string | null;
-      assigneeUserId: string | null;
-      status: string;
-    },
+    issue: IssueAccessRow,
     action: "issue:read" | "issue:mutate",
   ) {
     return access.decide({
@@ -1807,16 +2007,26 @@ export function issueRoutes(
     });
   }
 
-  async function assertIssueReadAllowed(req: Request, res: Response, issue: Parameters<typeof decideIssueAccess>[1]) {
+  type IssueAccessRow = {
+    id: string;
+    companyId: string;
+    projectId: string | null;
+    parentId: string | null;
+    assigneeAgentId: string | null;
+    assigneeUserId: string | null;
+    status: string;
+  };
+
+  async function assertIssueReadAllowed(req: Request, res: Response, issue: IssueAccessRow) {
     const decision = await decideIssueAccess(req, issue, "issue:read");
     if (decision.allowed) return true;
     res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
     return false;
   }
 
-  async function filterIssuesForActor<T extends Parameters<typeof decideIssueAccess>[1]>(req: Request, rows: T[]) {
+  async function filterIssuesForActor<T extends IssueAccessRow>(req: Request, rows: T[]) {
     const decisions = await Promise.all(rows.map((issue) => decideIssueAccess(req, issue, "issue:read")));
-    return rows.filter((_, index) => decisions[index]?.allowed);
+    return rows.filter((_, index): _ is T => Boolean(decisions[index]?.allowed));
   }
 
   async function actorCanReadCompanyScope(req: Request, companyId: string) {
@@ -2517,7 +2727,7 @@ export function issueRoutes(
     }
     const offset = parsedOffset ?? 0;
 
-    const rawResult = await svc.list(companyId, {
+    const listFilters: Parameters<typeof svc.list>[1] = {
       attention: attention === "blocked" ? "blocked" : undefined,
       status: req.query.status as string | string[] | undefined,
       assigneeAgentId,
@@ -2527,6 +2737,7 @@ export function issueRoutes(
       inboxArchivedByUserId,
       unreadForUserId,
       projectId: req.query.projectId as string | undefined,
+      goalId: req.query.goalId as string | undefined,
       workspaceId: req.query.workspaceId as string | undefined,
       executionWorkspaceId: req.query.executionWorkspaceId as string | undefined,
       parentId: req.query.parentId as string | undefined,
@@ -2550,7 +2761,41 @@ export function issueRoutes(
       offset,
       sortField: sortField === "updated" ? "updated" : undefined,
       sortDir: sortDir === "asc" || sortDir === "desc" ? sortDir : undefined,
-    });
+    };
+    if (attention === "blocked") {
+      const rawResult = await svc.listBlockedInbox(companyId, listFilters);
+      const result = await actorCanReadCompanyScope(req, companyId)
+        ? rawResult
+        : await filterIssuesForActor(req, rawResult);
+      const issueIds = result.map((issue) => issue.id);
+      const [handoffStates, recoveryActionByIssue] = await Promise.all([
+        listSuccessfulRunHandoffStates(db, companyId, issueIds),
+        recoveryActionsSvc.listActiveForIssues(companyId, issueIds),
+      ]);
+      const actor = getActorInfo(req);
+      await Promise.all(result.map(async (issue) => {
+        const activeRecoveryAction = recoveryActionByIssue.get(issue.id) ?? null;
+        if (!activeRecoveryAction) return;
+        const fullIssue = await svc.getById(issue.id);
+        if (!fullIssue) return;
+        const revalidated = await revalidateActiveSourceRecoveryForRead({
+          issue: fullIssue,
+          trigger: "read_projection",
+          actor,
+          activeRecoveryAction,
+        });
+        if (revalidated) recoveryActionByIssue.set(issue.id, revalidated);
+        else recoveryActionByIssue.delete(issue.id);
+      }));
+      res.json(result.map((issue) => ({
+        ...issue,
+        successfulRunHandoff: handoffStates.get(issue.id) ?? null,
+        activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
+      })));
+      return;
+    }
+
+    const rawResult = await svc.list(companyId, listFilters);
     const result = await actorCanReadCompanyScope(req, companyId)
       ? rawResult
       : await filterIssuesForActor(req, rawResult);
@@ -2604,6 +2849,7 @@ export function issueRoutes(
       participantAgentId: req.query.participantAgentId as string | undefined,
       assigneeUserId: req.query.assigneeUserId as string | undefined,
       projectId: req.query.projectId as string | undefined,
+      goalId: req.query.goalId as string | undefined,
       workspaceId: req.query.workspaceId as string | undefined,
       executionWorkspaceId: req.query.executionWorkspaceId as string | undefined,
       parentId: req.query.parentId as string | undefined,
@@ -2646,7 +2892,7 @@ export function issueRoutes(
       let offset = 0;
       let visibleCount = 0;
       while (true) {
-        const rows = await svc.list(companyId, {
+        const rows = await svc.listBlockedInbox(companyId, {
           ...blockedCountFilters,
           limit: ISSUE_LIST_MAX_LIMIT,
           offset,
@@ -3887,6 +4133,367 @@ export function issueRoutes(
     res.status(201).json(product);
   });
 
+  router.post("/issues/:id/routine-proposals/apply", validate(applyRoutineProposalSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    const actor = getActorInfo(req);
+    const result = await routineProposalSvc.applyApprovedProposal(id, req.body, {
+      agentId: actor.agentId ?? undefined,
+      userId: actor.actorType === "user" ? actor.actorId : undefined,
+      runId: actor.runId,
+    });
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.routine_proposal_applied",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        workProductId: req.body.workProductId ?? null,
+        attachmentId: req.body.attachmentId ?? null,
+        summary: result.summary,
+      },
+    });
+    res.json(result);
+  });
+
+  router.post("/issues/:id/docs-to-routines/proposal", validate(generateDocsToRoutinesProposalSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
+
+    const actor = getActorInfo(req);
+    const [documents, attachments, workProducts, agentsList, projectList, goalList] = await Promise.all([
+      documentsSvc.listIssueDocuments(issue.id),
+      svc.listAttachments(issue.id),
+      workProductsSvc.listForIssue(issue.id),
+      agentService(db).list(issue.companyId, { includeTerminated: false }),
+      projectService(db).list(issue.companyId),
+      goalService(db).list(issue.companyId),
+    ]);
+
+    const governingDocRevisionIds = new Set(
+      (issue.governingArtifacts ?? [])
+        .filter((artifact) => artifact?.kind === "document_revision" && typeof artifact.artifactId === "string")
+        .map((artifact) => String(artifact.artifactId)),
+    );
+    const governingWorkProductIds = new Set(
+      (issue.governingArtifacts ?? [])
+        .filter((artifact) => artifact?.kind === "work_product" && typeof artifact.artifactId === "string")
+        .map((artifact) => String(artifact.artifactId)),
+    );
+
+    const selectedDocuments = documents.filter((doc) => doc.latestRevisionId && governingDocRevisionIds.has(doc.latestRevisionId));
+    const selectedWorkProducts = workProducts.filter((product) => governingWorkProductIds.has(product.id));
+    const attachmentIdsFromWorkProducts = new Set(
+      selectedWorkProducts
+        .map((product) => (product.metadata && typeof product.metadata === "object" ? (product.metadata as Record<string, unknown>).attachmentId : null))
+        .filter((value): value is string => typeof value === "string"),
+    );
+    const selectedAttachments = attachments.filter((attachment) => attachmentIdsFromWorkProducts.has(attachment.id));
+
+    const proposal = buildDocsToRoutinesProposalArtifact({
+      issue,
+      sourceDocuments: selectedDocuments.map((doc) => ({
+        key: doc.key,
+        title: doc.title,
+        latestRevisionId: doc.latestRevisionId,
+        body: doc.body ?? "",
+        updatedAt: doc.updatedAt,
+      })),
+      sourceWorkProducts: selectedWorkProducts.map((product) => ({
+        id: product.id,
+        title: product.title,
+        summary: product.summary,
+        metadata: (product.metadata as Record<string, unknown> | null) ?? null,
+      })),
+      sourceAttachments: selectedAttachments.map((attachment) => ({
+        id: attachment.id,
+        originalFilename: attachment.originalFilename,
+        contentType: attachment.contentType,
+        contentPath: buildAttachmentContentPath(attachment.id),
+      })),
+      agents: agentsList.map((agent) => ({
+        id: agent.id,
+        name: agent.name,
+        title: agent.title,
+        role: agent.role,
+        reportsTo: agent.reportsTo,
+        status: agent.status,
+      })),
+      projects: projectList.map((project) => ({ id: project.id, name: project.name, status: project.status })),
+      goals: goalList.map((goal) => ({ id: goal.id, title: goal.title, status: goal.status })),
+      operatorPrompt: req.body.corpus.operatorPrompt ?? null,
+      defaults: req.body.corpus.defaults,
+    });
+
+    const proposalCorpusDocumentKey = "routine-proposal-corpus";
+    const proposalDocumentKey = "routine-proposal";
+    const sourceTrust = await sourceTrustForActorWrite(issue, actor);
+
+    const corpusDocumentBody = [
+      "# Routine proposal corpus",
+      "",
+      "```json",
+      JSON.stringify({
+        version: 1,
+        operatorPrompt: req.body.corpus.operatorPrompt ?? null,
+        references: {
+          documents: selectedDocuments.map((doc) => ({
+            issueId: issue.id,
+            documentId: doc.id,
+            key: doc.key,
+            title: doc.title,
+            revisionId: doc.latestRevisionId,
+            revisionNumber: doc.latestRevisionNumber,
+          })),
+          workProducts: selectedWorkProducts.map((product) => ({
+            issueId: issue.id,
+            workProductId: product.id,
+            title: product.title,
+            url: product.url,
+          })),
+          attachments: selectedAttachments.map((attachment) => ({
+            attachmentId: attachment.id,
+            title: attachment.originalFilename,
+            contentType: attachment.contentType,
+            byteSize: attachment.byteSize,
+          })),
+        },
+        defaults: req.body.corpus.defaults,
+      }, null, 2),
+      "```",
+    ].join("\n");
+
+    const corpusDocumentResult = await documentsSvc.upsertIssueDocument({
+      issueId: issue.id,
+      key: proposalCorpusDocumentKey,
+      title: "Routine Proposal Corpus",
+      format: "markdown",
+      body: corpusDocumentBody,
+      changeSummary: "Persist selected docs-to-routines proposal corpus",
+      createdByAgentId: actor.agentId ?? null,
+      createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      createdByRunId: actor.runId ?? null,
+      sourceTrust,
+    });
+
+    const markdown = `# Routine proposal\n\n\`\`\`json\n${JSON.stringify(proposal, null, 2)}\n\`\`\`\n`;
+    const proposalDocumentResult = await documentsSvc.upsertIssueDocument({
+      issueId: issue.id,
+      key: proposalDocumentKey,
+      title: "Routine Proposal",
+      format: "markdown",
+      body: markdown,
+      changeSummary: "Refresh docs-to-routines proposal",
+      createdByAgentId: actor.agentId ?? null,
+      createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      createdByRunId: actor.runId ?? null,
+      sourceTrust,
+    });
+
+    const filename = `${issue.identifier?.toLowerCase() ?? issue.id}-docs-to-routines-proposal.md`;
+    const stored = await storage.putFile({
+      companyId: issue.companyId,
+      namespace: `issues/${issue.id}`,
+      originalFilename: filename,
+      contentType: "text/markdown",
+      body: Buffer.from(markdown, "utf8"),
+    });
+
+    const attachment = await svc.createAttachment({
+      issueId: issue.id,
+      issueCommentId: null,
+      provider: stored.provider,
+      objectKey: stored.objectKey,
+      contentType: stored.contentType,
+      byteSize: stored.byteSize,
+      sha256: stored.sha256,
+      originalFilename: stored.originalFilename,
+      createdByAgentId: actor.agentId,
+      createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+    });
+
+    const product = await workProductsSvc.createForIssue(issue.id, issue.companyId, {
+      type: "artifact",
+      provider: "paperclip",
+      title: "Docs-to-routines routine proposal",
+      projectId: issue.projectId ?? null,
+      status: "draft",
+      reviewState: "needs_board_review",
+      isPrimary: true,
+      createdByRunId: actor.runId,
+      sourceTrust,
+      metadata: {
+        attachmentId: attachment.id,
+        contentType: attachment.contentType,
+        byteSize: attachment.byteSize,
+        contentPath: buildAttachmentContentPath(attachment.id),
+        openPath: buildAttachmentContentPath(attachment.id),
+        downloadPath: `${buildAttachmentContentPath(attachment.id)}?download=1`,
+        originalFilename: attachment.originalFilename,
+      },
+    });
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.document_updated",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        key: corpusDocumentResult.document.key,
+        documentId: corpusDocumentResult.document.id,
+        title: corpusDocumentResult.document.title,
+        revisionNumber: corpusDocumentResult.document.latestRevisionNumber,
+        source: "docs_to_routines_proposal_corpus",
+      },
+    });
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.document_updated",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        key: proposalDocumentResult.document.key,
+        documentId: proposalDocumentResult.document.id,
+        title: proposalDocumentResult.document.title,
+        revisionNumber: proposalDocumentResult.document.latestRevisionNumber,
+        source: "docs_to_routines_proposal",
+      },
+    });
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.work_product_created",
+      entityType: "issue",
+      entityId: issue.id,
+      details: { workProductId: product?.id ?? null, type: "artifact", provider: "paperclip", proposalKind: "docs_to_routines" },
+    });
+
+    res.status(201).json({
+      attachment: withContentPath(attachment),
+      workProduct: product,
+      proposal,
+      corpusDocument: corpusDocumentResult.document,
+      proposalDocument: proposalDocumentResult.document,
+    });
+  });
+
+  router.post("/issues/:id/docs-to-routines/proposal-review", validate(requestDocsToRoutinesProposalReviewSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
+
+    const actor = getActorInfo(req);
+    const agentSourceRunId = req.actor.type === "agent" ? requireAgentRunId(req, res) : null;
+    if (req.actor.type === "agent" && !agentSourceRunId) return;
+
+    const proposalDocument = await documentsSvc.getIssueDocumentByKey(issue.id, req.body.proposalDocumentKey);
+    if (!proposalDocument || !proposalDocument.latestRevisionId) {
+      res.status(404).json({ error: "Proposal document not found" });
+      return;
+    }
+
+    const target: RequestConfirmationTarget = req.body.proposalWorkProductId
+      ? {
+          type: "issue_work_product",
+          issueId: issue.id,
+          workProductId: req.body.proposalWorkProductId,
+          label: req.body.proposalLabel ?? proposalDocument.title ?? "Routine proposal artifact",
+          href: `#work-product-${req.body.proposalWorkProductId}`,
+        }
+      : {
+          type: "issue_document",
+          issueId: issue.id,
+          documentId: proposalDocument.id,
+          key: proposalDocument.key,
+          revisionId: req.body.proposalRevisionId ?? proposalDocument.latestRevisionId,
+          revisionNumber: req.body.proposalRevisionNumber ?? proposalDocument.latestRevisionNumber,
+          label: req.body.proposalLabel ?? proposalDocument.title ?? "Routine proposal",
+          href: `#document-${encodeURIComponent(proposalDocument.key)}`,
+        };
+
+    const interaction = await issueThreadInteractionsSvc.create(issue, {
+      kind: "request_confirmation",
+      idempotencyKey: req.body.idempotencyKey
+        ?? `confirmation:${issue.id}:routine-proposal:${proposalDocument.latestRevisionId}`,
+      sourceRunId: req.actor.type === "agent" ? agentSourceRunId : null,
+      title: "Review routine proposal",
+      summary: "Review and approve the generated docs-to-routines proposal.",
+      continuationPolicy: req.body.continuationPolicy,
+      payload: {
+        version: 1,
+        prompt: req.body.prompt,
+        detailsMarkdown: req.body.detailsMarkdown ?? null,
+        acceptLabel: req.body.acceptLabel ?? "Approve proposal",
+        rejectLabel: req.body.rejectLabel ?? "Request changes",
+        rejectRequiresReason: req.body.rejectRequiresReason ?? false,
+        rejectReasonLabel: req.body.rejectReasonLabel ?? null,
+        allowDeclineReason: req.body.allowDeclineReason ?? true,
+        declineReasonPlaceholder: req.body.declineReasonPlaceholder ?? "Optional: what should change before this proposal is approved?",
+        supersedeOnUserComment: req.body.supersedeOnUserComment ?? true,
+        target,
+      },
+    }, {
+      agentId: actor.agentId,
+      userId: actor.actorType === "user" ? actor.actorId : null,
+    });
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.thread_interaction_created",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        interactionId: interaction.id,
+        interactionKind: interaction.kind,
+        interactionStatus: interaction.status,
+        continuationPolicy: interaction.continuationPolicy,
+        source: "docs_to_routines_proposal_review",
+      },
+    });
+
+    res.status(201).json(interaction);
+  });
+
   router.post("/issues/:id/low-trust/promotions", validate(promoteLowTrustOutputSchema), async (req, res) => {
     const id = req.params.id as string;
     const issue = await svc.getById(id);
@@ -4390,6 +4997,18 @@ export function issueRoutes(
       });
     }
     await assertIssueEnvironmentSelection(companyId, createBody.executionWorkspaceSettings?.environmentId);
+    if (createBody.governingArtifacts !== undefined) {
+      await assertIssueGoverningArtifactsCompanyScoped(
+        { id: createBody.parentId ?? "", companyId },
+        createBody.governingArtifacts as GoverningArtifactReference[] | null | undefined,
+      );
+    }
+    if (createBody.acceptanceEvidence !== undefined) {
+      await assertIssueAcceptanceEvidenceCompanyScoped(
+        { id: createBody.parentId ?? "", companyId },
+        createBody.acceptanceEvidence as AcceptanceEvidenceEntry[] | null | undefined,
+      );
+    }
 
     const executionPolicy = applyActorMonitorScheduledBy(
       normalizeIssueExecutionPolicy(createBody.executionPolicy),
@@ -4867,6 +5486,12 @@ export function issueRoutes(
       if (!(await assertExplicitResumeIntentAllowed(req, res, existing))) return;
     }
     await assertIssueEnvironmentSelection(existing.companyId, updateFields.executionWorkspaceSettings?.environmentId);
+    if (updateFields.governingArtifacts !== undefined) {
+      await assertIssueGoverningArtifactsCompanyScoped(existing, updateFields.governingArtifacts as GoverningArtifactReference[] | null | undefined);
+    }
+    if (updateFields.acceptanceEvidence !== undefined) {
+      await assertIssueAcceptanceEvidenceCompanyScoped(existing, updateFields.acceptanceEvidence as AcceptanceEvidenceEntry[] | null | undefined);
+    }
     const requestedAssigneeAgentId =
       normalizedAssigneeAgentId === undefined ? existing.assigneeAgentId : normalizedAssigneeAgentId;
     const explicitMoveToTodoRequested = reopenRequested || resumeRequested === true;

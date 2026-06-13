@@ -43,6 +43,14 @@ describe("issuesApi.list", () => {
     );
   });
 
+  it("passes goalId through to the company issues endpoint", async () => {
+    await issuesApi.list("company-1", { goalId: "goal-1", limit: 10 });
+
+    expect(mockApi.get).toHaveBeenCalledWith(
+      "/companies/company-1/issues?goalId=goal-1&limit=10",
+    );
+  });
+
   it("passes pagination offsets through to the company issues endpoint", async () => {
     await issuesApi.list("company-1", { limit: 500, offset: 1500 });
 

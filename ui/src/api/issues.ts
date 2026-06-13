@@ -51,6 +51,7 @@ export const issuesApi = {
       labelId?: string;
       workspaceId?: string;
       executionWorkspaceId?: string;
+      goalId?: string;
       originKind?: string;
       originKindPrefix?: string;
       originId?: string;
@@ -80,6 +81,7 @@ export const issuesApi = {
     if (filters?.labelId) params.set("labelId", filters.labelId);
     if (filters?.workspaceId) params.set("workspaceId", filters.workspaceId);
     if (filters?.executionWorkspaceId) params.set("executionWorkspaceId", filters.executionWorkspaceId);
+    if (filters?.goalId) params.set("goalId", filters.goalId);
     if (filters?.originKind) params.set("originKind", filters.originKind);
     if (filters?.originKindPrefix) params.set("originKindPrefix", filters.originKindPrefix);
     if (filters?.originId) params.set("originId", filters.originId);

@@ -5,6 +5,7 @@ import type {
   WorkspaceRuntimeService,
 } from "./workspace-runtime.js";
 import type { AgentEnvConfig } from "./secrets.js";
+import type { AcceptanceEvidenceEntry, GoverningArtifactReference } from "../validators/governing-artifact.js";
 
 export type ProjectWorkspaceSourceType = "local_path" | "git_repo" | "remote_managed" | "non_git_path";
 export type ProjectWorkspaceVisibility = "default" | "advanced";
@@ -91,6 +92,8 @@ export interface Project {
   color: string | null;
   icon: string | null;
   env: AgentEnvConfig | null;
+  governingArtifacts: GoverningArtifactReference[] | null;
+  acceptanceEvidence: AcceptanceEvidenceEntry[] | null;
   pauseReason: PauseReason | null;
   pausedAt: Date | null;
   executionWorkspacePolicy: ProjectExecutionWorkspacePolicy | null;

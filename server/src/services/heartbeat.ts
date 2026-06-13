@@ -28,6 +28,7 @@ import {
   agentRuntimeState,
   agentTaskSessions,
   agentWakeupRequests,
+  goals,
   activityLog,
   approvals,
   companySkills as companySkillsTable,
@@ -46,6 +47,7 @@ import {
   issues,
   issueWorkProducts,
   projects,
+  projectGoals,
   projectWorkspaces,
   routineRevisions,
   routineRuns,
@@ -103,6 +105,7 @@ import {
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
+import { getDefaultCompanyGoal, getGoalAncestorsFromParent } from "./goals.js";
 import { goalReviewService, isGoalReviewDue, parseGoalReviewRuntimeState } from "./goal-review.js";
 import {
   buildIssueMonitorClearedPatch,
@@ -2501,8 +2504,25 @@ export async function buildPaperclipWakePayload(input: {
         status: string;
         priority: string;
         workMode: string;
+        goalId?: string | null;
         projectId?: string | null;
         executionPolicy?: unknown;
+        goal?: {
+          id: string;
+          title: string;
+          status: string;
+          level: string;
+          ownerAgentId: string | null;
+          description: string | null;
+          descriptionTruncated: boolean;
+          ancestors: Array<{
+            id: string;
+            title: string;
+            level: string;
+            status: string;
+            description: string | null;
+          }>;
+        } | null;
       }
     | null;
   exposeLowTrustRaw?: boolean;
@@ -2513,6 +2533,7 @@ export async function buildPaperclipWakePayload(input: {
   const annotationCommentId = readNonEmptyString(input.contextSnapshot.annotationCommentId);
   const issueId = readNonEmptyString(input.contextSnapshot.issueId);
   const continuationSummary = input.continuationSummary ?? null;
+  const wakeIssueGoal = input.issueSummary?.goal ?? null;
   const issueSummary =
     input.issueSummary ??
     (issueId
@@ -2524,11 +2545,79 @@ export async function buildPaperclipWakePayload(input: {
             status: issues.status,
             priority: issues.priority,
             workMode: issues.workMode,
+            goalId: issues.goalId,
+            projectId: issues.projectId,
           })
           .from(issues)
           .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)))
           .then((rows) => rows[0] ?? null)
       : null);
+  const resolvedWakeIssueGoal = wakeIssueGoal ?? (issueSummary
+    ? await (async () => {
+        const directGoal = issueSummary.goalId
+          ? await input.db
+              .select()
+              .from(goals)
+              .where(and(eq(goals.id, issueSummary.goalId), eq(goals.companyId, input.companyId)))
+              .then((rows) => rows[0] ?? null)
+          : null;
+
+        let resolvedGoal = directGoal;
+
+        if (!resolvedGoal && issueSummary.projectId) {
+          const project = await input.db
+            .select({ goalId: projects.goalId })
+            .from(projects)
+            .where(and(eq(projects.id, issueSummary.projectId), eq(projects.companyId, input.companyId)))
+            .then((rows) => rows[0] ?? null);
+
+          const fallbackProjectGoalId =
+            project?.goalId ?? await input.db
+              .select({ goalId: projectGoals.goalId })
+              .from(projectGoals)
+              .innerJoin(projects, eq(projects.id, projectGoals.projectId))
+              .where(and(eq(projects.id, issueSummary.projectId), eq(projects.companyId, input.companyId)))
+              .then((rows) => rows[0]?.goalId ?? null);
+
+          if (fallbackProjectGoalId) {
+            resolvedGoal = await input.db
+              .select()
+              .from(goals)
+              .where(and(eq(goals.id, fallbackProjectGoalId), eq(goals.companyId, input.companyId)))
+              .then((rows) => rows[0] ?? null);
+          }
+        }
+
+        if (!resolvedGoal && !issueSummary.projectId) {
+          resolvedGoal = await getDefaultCompanyGoal(input.db, input.companyId);
+        }
+
+        if (!resolvedGoal) return null;
+
+        const ancestors = await getGoalAncestorsFromParent(input.db, {
+          companyId: resolvedGoal.companyId,
+          parentId: resolvedGoal.parentId,
+          goalId: resolvedGoal.id,
+        });
+
+        return {
+          id: resolvedGoal.id,
+          title: resolvedGoal.title,
+          status: resolvedGoal.status,
+          level: resolvedGoal.level,
+          ownerAgentId: resolvedGoal.ownerAgentId ?? null,
+          description: resolvedGoal.description ?? null,
+          descriptionTruncated: false,
+          ancestors: ancestors.map((ancestor) => ({
+            id: ancestor.id,
+            title: ancestor.title,
+            level: ancestor.level,
+            status: ancestor.status,
+            description: ancestor.description ?? null,
+          })),
+        };
+      })()
+    : null);
   if (
     commentIds.length === 0 &&
     Object.keys(executionStage).length === 0 &&
@@ -2687,6 +2776,19 @@ export async function buildPaperclipWakePayload(input: {
           status: issueSummary.status,
           priority: issueSummary.priority,
           workMode: issueSummary.workMode,
+          goalId: issueSummary.goalId ?? resolvedWakeIssueGoal?.id ?? null,
+          goal: resolvedWakeIssueGoal
+            ? {
+                id: resolvedWakeIssueGoal.id,
+                title: resolvedWakeIssueGoal.title,
+                status: resolvedWakeIssueGoal.status,
+                level: resolvedWakeIssueGoal.level,
+                ownerAgentId: resolvedWakeIssueGoal.ownerAgentId,
+                description: resolvedWakeIssueGoal.description,
+                descriptionTruncated: resolvedWakeIssueGoal.descriptionTruncated,
+                ancestors: resolvedWakeIssueGoal.ancestors,
+              }
+            : null,
         }
       : null,
     childIssueSummaries: Array.isArray(input.contextSnapshot.childIssueSummaries)
@@ -2779,6 +2881,14 @@ export function buildPaperclipTaskMarkdown(input: {
     id: string;
     body: string;
   } | null;
+  goalReview?: {
+    due?: boolean;
+    ownedActiveGoalCount?: number;
+    goalsWithoutExecutionPathCount?: number;
+    goalsWithoutExecutionPath?: Array<{ id: string; title: string }>;
+    attentionGoalCount?: number;
+    attentionGoals?: Array<{ id: string; title: string; lastVerdict?: string | null; verdictStreak?: number }>;
+  } | null;
   interaction?: {
     kind?: string | null;
     status?: string | null;
@@ -2796,6 +2906,7 @@ export function buildPaperclipTaskMarkdown(input: {
   };
   const issue = input.issue;
   const wakeComment = input.wakeComment ?? null;
+  const goalReview = input.goalReview ?? null;
   const acceptedPlanContinuation =
     !wakeComment &&
     (input.acceptedPlanContinuation || (
@@ -2803,7 +2914,7 @@ export function buildPaperclipTaskMarkdown(input: {
       input.interaction.status === "accepted" &&
       issue?.workMode === "planning"
     ));
-  if (!issue && !wakeComment) return null;
+  if (!issue && !wakeComment && !goalReview) return null;
 
   const lines = [
     "Paperclip task context:",
@@ -2842,6 +2953,38 @@ export function buildPaperclipTaskMarkdown(input: {
   }
   if (wakeComment?.body.trim()) {
     lines.push("", "Latest wake comment:", fenceTaskText(wakeComment.body.trim()));
+  }
+  if (goalReview?.due) {
+    lines.push(
+      "",
+      "Goal-review wake:",
+      `- Owned active goals: ${goalReview.ownedActiveGoalCount ?? 0}`,
+      `- Goals needing planning: ${goalReview.goalsWithoutExecutionPathCount ?? 0}`,
+      `- Attention goals: ${goalReview.attentionGoalCount ?? 0}`,
+      "",
+      "Goal-review directive:",
+      "Review owned active goals now. Record verdicts, create exactly one planning issue for each goal that needs planning, and act on existing stalled/blocked execution paths instead of creating duplicates.",
+    );
+
+    if ((goalReview.goalsWithoutExecutionPath?.length ?? 0) > 0) {
+      lines.push(
+        "",
+        "Goals without execution paths:",
+        ...goalReview.goalsWithoutExecutionPath!.map((goal) =>
+          `- ${quoteTaskScalar(goal.title)} (${quoteTaskScalar(goal.id)})`,
+        ),
+      );
+    }
+
+    if ((goalReview.attentionGoals?.length ?? 0) > 0) {
+      lines.push(
+        "",
+        "Attention goals:",
+        ...goalReview.attentionGoals!.map((goal) =>
+          `- ${quoteTaskScalar(goal.title)} (${quoteTaskScalar(goal.id)}): verdict ${quoteTaskScalar(goal.lastVerdict ?? "unknown")}, streak ${goal.verdictStreak ?? 0}`,
+        ),
+      );
+    }
   }
   lines.push("", "Use this task context as the current assignment.");
   return lines.join("\n");
@@ -4633,12 +4776,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     runtimeStateJson: unknown;
     runId: string;
     skip: boolean;
+    force: boolean;
   }) {
     if (input.skip) return null;
     try {
       const state = parseGoalReviewRuntimeState(input.runtimeStateJson);
       const now = new Date();
-      if (!isGoalReviewDue({ state, now })) return null;
+      if (!input.force && !isGoalReviewDue({ state, now })) return null;
       const reviewSvc = goalReviewService(db);
       const summary = await reviewSvc.buildGoalReviewWakeSummary(input.agent);
       // Stamp even when the agent owns no goals so the ownership query itself
@@ -8073,6 +8217,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       // Comment-scoped wakes are issue-scoped by contract; goal review rides
       // on timer/assignment wakes instead.
       skip: Boolean(wakeCommentContext),
+      // A manual board "Run now" with no issue scope is an explicit request to
+      // find goal-directed work now, so bypass the periodic throttle and always
+      // surface current goal-review context when applicable.
+      force:
+        run.invocationSource === "on_demand" &&
+        run.triggerDetail === "manual" &&
+        !wakeCommentContext &&
+        !issueRef,
     });
     if (goalReviewWakeContext) {
       context.paperclipGoalReview = goalReviewWakeContext;
@@ -8114,6 +8266,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         : null,
       wakeComment: safeWakeCommentContext,
+      goalReview: goalReviewWakeContext,
       interaction: {
         kind: readNonEmptyString(context.interactionKind),
         status: readNonEmptyString(context.interactionStatus),
@@ -11013,6 +11166,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return rows.map((row) => row.id);
   }
 
+  async function listGoalScopedRunIds(companyId: string, goalId: string) {
+    const runIssueId = sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`;
+
+    const rows = await db
+      .selectDistinctOn([heartbeatRuns.id], { id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .innerJoin(
+        issues,
+        and(
+          eq(issues.companyId, companyId),
+          sql`${issues.id}::text = ${runIssueId}`,
+        ),
+      )
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          inArray(heartbeatRuns.status, [...CANCELLABLE_HEARTBEAT_RUN_STATUSES]),
+          eq(issues.goalId, goalId),
+        ),
+      );
+
+    return rows.map((row) => row.id);
+  }
+
   async function listProjectScopedWakeupIds(companyId: string, projectId: string) {
     const wakeIssueId = sql<string | null>`${agentWakeupRequests.payload} ->> 'issueId'`;
     const effectiveProjectId = sql<string | null>`coalesce(${agentWakeupRequests.payload} ->> 'projectId', ${issues.projectId}::text)`;
@@ -11033,6 +11210,31 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
           sql`${agentWakeupRequests.runId} is null`,
           sql`${effectiveProjectId} = ${projectId}`,
+        ),
+      );
+
+    return rows.map((row) => row.id);
+  }
+
+  async function listGoalScopedWakeupIds(companyId: string, goalId: string) {
+    const wakeIssueId = sql<string | null>`${agentWakeupRequests.payload} ->> 'issueId'`;
+
+    const rows = await db
+      .selectDistinctOn([agentWakeupRequests.id], { id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .innerJoin(
+        issues,
+        and(
+          eq(issues.companyId, companyId),
+          sql`${issues.id}::text = ${wakeIssueId}`,
+        ),
+      )
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, companyId),
+          inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+          sql`${agentWakeupRequests.runId} is null`,
+          eq(issues.goalId, goalId),
         ),
       );
 
@@ -11068,6 +11270,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ),
         )
         .then((rows) => rows.map((row) => row.id));
+    } else if (scope.scopeType === "goal") {
+      wakeupIds = await listGoalScopedWakeupIds(scope.companyId, scope.scopeId);
     } else {
       wakeupIds = await listProjectScopedWakeupIds(scope.companyId, scope.scopeId);
     }
@@ -11269,7 +11473,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             ),
           )
           .then((rows) => rows.map((row) => row.id))
-        : await listProjectScopedRunIds(scope.companyId, scope.scopeId);
+        : scope.scopeType === "goal"
+          ? await listGoalScopedRunIds(scope.companyId, scope.scopeId)
+          : await listProjectScopedRunIds(scope.companyId, scope.scopeId);
 
     for (const runId of runIds) {
       await cancelRunInternal(runId, "Cancelled due to budget pause");

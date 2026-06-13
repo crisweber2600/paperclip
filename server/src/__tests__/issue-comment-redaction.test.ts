@@ -7,9 +7,11 @@ import {
   companies,
   companyMemberships,
   createDb,
+  goals,
   issueComments,
   issueReferenceMentions,
   issues,
+  projects,
 } from "@paperclipai/db";
 import { companySearchQuerySchema } from "@paperclipai/shared";
 import {
@@ -48,6 +50,8 @@ describeEmbeddedPostgres("deleted issue comment redaction", () => {
     await db.delete(issueComments);
     await db.delete(issues);
     await db.delete(companyMemberships);
+    await db.delete(projects);
+    await db.delete(goals);
     await db.delete(companies);
   });
 
@@ -185,6 +189,113 @@ describeEmbeddedPostgres("deleted issue comment redaction", () => {
     ]);
     expect(JSON.stringify(wakePayload)).not.toContain("secret deleted body");
     expect(JSON.stringify(wakePayload)).not.toContain("secret metadata");
+  });
+
+  it("threads direct issue goal context into wake payloads", async () => {
+    const { companyId, issueId } = await seedIssue();
+    const rootGoalId = randomUUID();
+    const teamGoalId = randomUUID();
+
+    await db.insert(goals).values([
+      {
+        id: rootGoalId,
+        companyId,
+        title: "Ship V1",
+        level: "company",
+        status: "active",
+        description: "Primary company objective.",
+      },
+      {
+        id: teamGoalId,
+        companyId,
+        title: "Improve agent wake payloads",
+        level: "team",
+        status: "active",
+        parentId: rootGoalId,
+        ownerAgentId: null,
+        description: "Agents should receive enough goal context to act without refetching.",
+      },
+    ]);
+
+    await db.update(issues).set({ goalId: teamGoalId }).where(sql`${issues.id} = ${issueId}`);
+
+    const wakePayload = await buildPaperclipWakePayload({
+      db,
+      companyId,
+      contextSnapshot: {
+        issueId,
+        wakeReason: "issue_assigned",
+      },
+    });
+
+    expect(wakePayload?.issue).toMatchObject({
+      id: issueId,
+      goalId: teamGoalId,
+      goal: {
+        id: teamGoalId,
+        title: "Improve agent wake payloads",
+        level: "team",
+        status: "active",
+        description: "Agents should receive enough goal context to act without refetching.",
+        ancestors: [{ id: rootGoalId, title: "Ship V1" }],
+      },
+    });
+  });
+
+  it("falls back to the project goal context in wake payloads", async () => {
+    const { companyId, issueId } = await seedIssue();
+    const rootGoalId = randomUUID();
+    const projectGoalId = randomUUID();
+    const projectId = randomUUID();
+
+    await db.insert(goals).values([
+      {
+        id: rootGoalId,
+        companyId,
+        title: "Ship V1",
+        level: "company",
+        status: "active",
+      },
+      {
+        id: projectGoalId,
+        companyId,
+        title: "Improve agent wake payloads",
+        level: "team",
+        status: "active",
+        parentId: rootGoalId,
+        description: "Project-scoped goal fallback.",
+      },
+    ]);
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      goalId: projectGoalId,
+      name: "Wake payload project",
+      status: "in_progress",
+    });
+
+    await db.update(issues).set({ projectId, goalId: null }).where(sql`${issues.id} = ${issueId}`);
+
+    const wakePayload = await buildPaperclipWakePayload({
+      db,
+      companyId,
+      contextSnapshot: {
+        issueId,
+        wakeReason: "issue_assigned",
+      },
+    });
+
+    expect(wakePayload?.issue).toMatchObject({
+      id: issueId,
+      goalId: projectGoalId,
+      goal: {
+        id: projectGoalId,
+        title: "Improve agent wake payloads",
+        description: "Project-scoped goal fallback.",
+        ancestors: [{ id: rootGoalId, title: "Ship V1" }],
+      },
+    });
   });
 
   it("excludes deleted comment bodies from company search", async () => {

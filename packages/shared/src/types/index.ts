@@ -1,3 +1,20 @@
+export type {
+  PaperclipWakeIssueGoalAncestor,
+  PaperclipWakeIssueGoal,
+  PaperclipWakeIssue,
+  PaperclipWakeExecutionPrincipal,
+  PaperclipWakeExecutionStage,
+  PaperclipWakeComment,
+  PaperclipWakeContinuationSummary,
+  PaperclipWakeLivenessContinuation,
+  PaperclipWakeChildIssueSummary,
+  PaperclipWakeBlockerSummary,
+  PaperclipWakeTreeHoldSummary,
+  PaperclipWakeGoalReviewGoalRef,
+  PaperclipWakeGoalReviewAttentionGoal,
+  PaperclipWakeGoalReview,
+  PaperclipWakePayload,
+} from "./paperclip-wake.js";
 export type { Company } from "./company.js";
 export type {
   Environment,
@@ -195,6 +212,21 @@ export type {
   CompanySearchScope,
   CompanySearchSnippet,
 } from "./search.js";
+export type {
+  Goal,
+  GoalExecutionPath,
+  GoalOperatorView,
+  GoalAncestorSummary,
+  GoalReviewItem,
+  GoalReviewResponse,
+  GoalReviewPlanningIssue,
+  GoalReviewVerdictResult,
+  RecordGoalVerdictsResponse,
+  GoalReviewWakeGoalSummary,
+  GoalReviewWakeAttentionGoalSummary,
+  GoalReviewWakeContext,
+  GoalReviewRuntimeState,
+} from "./goal.js";
 export { COMPANY_SEARCH_SCOPES } from "./search.js";
 export type {
   ExecutionWorkspace,
@@ -326,6 +358,7 @@ export type {
   AskUserQuestionsAnswer,
   AskUserQuestionsResult,
   RequestConfirmationIssueDocumentTarget,
+  RequestConfirmationIssueWorkProductTarget,
   RequestConfirmationCustomTarget,
   RequestConfirmationTarget,
   RequestConfirmationPayload,
@@ -369,7 +402,6 @@ export type {
   IssueTreePreviewTotals,
   IssueTreePreviewWarning,
 } from "./issue-tree-control.js";
-export type { Goal } from "./goal.js";
 export type { Approval, ApprovalComment } from "./approval.js";
 export type {
   BudgetPolicy,

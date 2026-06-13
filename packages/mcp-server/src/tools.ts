@@ -254,6 +254,23 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       async () => client.requestJson("GET", "/agents/me/goal-review"),
     ),
     makeTool(
+      "paperclipGoalVerdict",
+      "Record goal-review verdicts for active goals owned by the authenticated agent",
+      z.object({
+        verdicts: z
+          .array(
+            z.object({
+              goalId: z.string().uuid(),
+              verdict: z.enum(["done", "progressing", "stalled", "blocked"]),
+              reason: z.string().trim().min(1).max(2000),
+            }),
+          )
+          .min(1)
+          .max(25),
+      }),
+      async (input) => client.requestJson("POST", "/agents/me/goal-review/verdicts", { body: input }),
+    ),
+    makeTool(
       "paperclipListAgents",
       "List agents in a company",
       z.object({ companyId: companyIdOptional }),

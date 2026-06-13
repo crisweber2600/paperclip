@@ -62,6 +62,8 @@ export const issues = pgTable(
       .references((): AnyPgColumn => executionWorkspaces.id, { onDelete: "set null" }),
     executionWorkspacePreference: text("execution_workspace_preference"),
     executionWorkspaceSettings: jsonb("execution_workspace_settings").$type<Record<string, unknown>>(),
+    governingArtifacts: jsonb("governing_artifacts").$type<Record<string, unknown>[] | null>(),
+    acceptanceEvidence: jsonb("acceptance_evidence").$type<Record<string, unknown>[] | null>(),
     sourceTrust: jsonb("source_trust").$type<SourceTrustMetadata | null>(),
     startedAt: timestamp("started_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),

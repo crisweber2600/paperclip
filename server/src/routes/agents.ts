@@ -12,8 +12,11 @@ import {
   createAgentHireSchema,
   createAgentSchema,
   deriveAgentUrlKey,
+  goalReviewResponseSchema,
+  recordGoalVerdictsResponseSchema,
   isUuidLike,
   normalizeIssueIdentifier,
+  recordGoalVerdictsSchema,
   resetAgentSessionSchema,
   testAdapterEnvironmentSchema,
   type AgentDesiredSkillEntry,
@@ -42,7 +45,10 @@ import {
   companySkillService,
   budgetService,
   getGoalReviewIntervalHours,
+  getGoalReviewMaxVerdictStreak,
   goalReviewService,
+  goalService,
+  isAttentionGoal,
   heartbeatService,
   ISSUE_LIST_DEFAULT_LIMIT,
   issueApprovalService,
@@ -104,6 +110,7 @@ import { recoveryService } from "../services/recovery/service.js";
 import { resolveCoreTrustPreset } from "../services/trust-preset-resolver.js";
 import { readObject } from "../lib/objects.js";
 import { listInvalidOrgChainDescendantIds } from "../services/agent-invokability.js";
+import { validateGoalReviewVerdictReason } from "../services/goal-review-semantics.js";
 
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
@@ -1992,19 +1999,235 @@ export function agentRoutes(
       entityId: agent.id,
       details: {
         goalCount: reviewGoals.length,
-        needsPlanningGoalIds: reviewGoals.filter((goal) => goal.needsPlanning).map((goal) => goal.id),
+        needsPlanningGoalIds: reviewGoals
+          .filter((goal: (typeof reviewGoals)[number]) => goal.needsPlanning)
+          .map((goal: (typeof reviewGoals)[number]) => goal.id),
       },
     });
 
-    res.json({
+    res.json(goalReviewResponseSchema.parse({
       agentId: agent.id,
       companyId: agent.companyId,
       generatedAt: now.toISOString(),
       intervalHours: getGoalReviewIntervalHours(),
       lastReviewedAt: priorState.lastCheckedAt ?? null,
       goals: reviewGoals,
-    });
+      routineHint:
+        "For check-ins between reviews, you may create a self-assigned cron routine with goalId set via POST /api/companies/{companyId}/routines.",
+    }));
   });
+
+  // Records the goal owner's judge verdicts for its owned active goals.
+  // A `done` verdict is first-class completion evidence in the heartbeat path,
+  // so the server immediately marks the goal achieved in the same flow.
+  router.post(
+    "/agents/me/goal-review/verdicts",
+    validate(recordGoalVerdictsSchema),
+    async (req, res) => {
+      if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.companyId) {
+        res.status(401).json({ error: "Agent authentication required" });
+        return;
+      }
+      const agent = await svc.getById(req.actor.agentId);
+      if (!agent) {
+        res.status(404).json({ error: "Agent not found" });
+        return;
+      }
+
+      const { verdicts } = req.body as { verdicts: Array<{ goalId: string; verdict: string; reason: string }> };
+      const goalIds = verdicts.map((entry) => entry.goalId);
+      const uniqueGoalIds = new Set(goalIds);
+      if (uniqueGoalIds.size !== goalIds.length) {
+        res.status(400).json({ error: "Duplicate goalIds are not allowed in a single request" });
+        return;
+      }
+      const reviewSvc = goalReviewService(db);
+      const goalsSvc = goalService(db);
+      const issuesSvc = issueService(db);
+      const reviewGoals = await reviewSvc.buildGoalReview(agent);
+      const reviewGoalsById = new Map(reviewGoals.map((goal) => [goal.id, goal]));
+      const ownedGoalIds = new Set(reviewGoalsById.keys());
+      const unknownGoalIds = verdicts
+        .map((entry) => entry.goalId)
+        .filter((goalId) => !ownedGoalIds.has(goalId));
+      if (unknownGoalIds.length > 0) {
+        res.status(422).json({
+          error: `Verdicts may only target active goals owned by this agent. Rejected: ${unknownGoalIds.join(", ")}`,
+        });
+        return;
+      }
+
+      const now = new Date();
+      const maxVerdictStreak = getGoalReviewMaxVerdictStreak();
+      const results: Array<{ goalId: string; verdict: string; verdictStreak: number; recordedAt: string }> = [];
+      const planningIssues: Array<{
+        goalId: string;
+        issueId: string;
+        identifier: string | null;
+        title: string;
+        reused: boolean;
+      }> = [];
+
+      const ensurePlanningIssueForGoal = async (goalId: string) => {
+        const existing = await db
+          .select({
+            id: issuesTable.id,
+            identifier: issuesTable.identifier,
+            title: issuesTable.title,
+          })
+          .from(issuesTable)
+          .where(
+            and(
+              eq(issuesTable.companyId, agent.companyId),
+              eq(issuesTable.goalId, goalId),
+              eq(issuesTable.workMode, "planning"),
+              not(inArray(issuesTable.status, ["done", "cancelled"])),
+            ),
+          )
+          .orderBy(desc(issuesTable.createdAt), desc(issuesTable.id))
+          .then((rows) => rows[0] ?? null);
+        if (existing) {
+          planningIssues.push({
+            goalId,
+            issueId: existing.id,
+            identifier: existing.identifier,
+            title: existing.title,
+            reused: true,
+          });
+          return;
+        }
+
+        const goal = reviewGoalsById.get(goalId);
+        const created = await issuesSvc.create(agent.companyId, {
+          title: `Plan: ${goal?.title ?? "Goal"}`,
+          description:
+            "Goal-review created this planning issue because the active goal had no execution path. Define the execution path and child work before resuming implementation.",
+          goalId,
+          workMode: "planning",
+          assigneeAgentId: agent.id,
+          createdByAgentId: agent.id,
+          createdByUserId: null,
+          status: "todo",
+          originKind: "manual",
+        });
+        planningIssues.push({
+          goalId,
+          issueId: created.id,
+          identifier: created.identifier,
+          title: created.title,
+          reused: false,
+        });
+        await logActivity(db, {
+          companyId: agent.companyId,
+          actorType: "agent",
+          actorId: agent.id,
+          agentId: agent.id,
+          action: "goal.review_planning_issue_ensured",
+          entityType: "goal",
+          entityId: goalId,
+          details: {
+            issueId: created.id,
+            issueIdentifier: created.identifier,
+            issueTitle: created.title,
+            reused: false,
+            source: "owner_review",
+          },
+        });
+      };
+
+      for (const entry of verdicts) {
+        validateGoalReviewVerdictReason(entry);
+        const reviewGoal = reviewGoalsById.get(entry.goalId);
+        if (reviewGoal?.needsPlanning && entry.verdict !== "done") {
+          await ensurePlanningIssueForGoal(entry.goalId);
+        }
+        const updated = await goalsSvc.recordVerdict(entry.goalId, {
+          verdict: entry.verdict,
+          reason: entry.reason,
+          byAgentId: agent.id,
+          now,
+        });
+        if (!updated) continue;
+        await logActivity(db, {
+          companyId: agent.companyId,
+          actorType: "agent",
+          actorId: agent.id,
+          agentId: agent.id,
+          action: "goal.verdict_recorded",
+          entityType: "goal",
+          entityId: updated.id,
+          details: {
+            verdict: entry.verdict,
+            reason: entry.reason,
+            verdictStreak: updated.verdictStreak,
+            source: "owner_review",
+          },
+        });
+        if (entry.verdict === "done") {
+          const achievedGoal = await goalsSvc.update(updated.id, {
+            status: "achieved",
+          });
+          if (achievedGoal) {
+            await logActivity(db, {
+              companyId: agent.companyId,
+              actorType: "agent",
+              actorId: agent.id,
+              agentId: agent.id,
+              action: "goal.review_goal_achieved",
+              entityType: "goal",
+              entityId: achievedGoal.id,
+              details: {
+                verdict: entry.verdict,
+                reason: entry.reason,
+                source: "owner_review",
+              },
+            });
+          }
+        }
+        if (
+          (entry.verdict === "stalled" || entry.verdict === "blocked") &&
+          updated.verdictStreak === maxVerdictStreak
+        ) {
+          // Fires only at the exact threshold so it logs once per exhaustion.
+          await logActivity(db, {
+            companyId: agent.companyId,
+            actorType: "agent",
+            actorId: agent.id,
+            agentId: agent.id,
+            action: "goal.review_attention_exhausted",
+            entityType: "goal",
+            entityId: updated.id,
+            details: {
+              verdict: entry.verdict,
+              verdictStreak: updated.verdictStreak,
+              maxVerdictStreak,
+            },
+          });
+        }
+        results.push({
+          goalId: updated.id,
+          verdict: entry.verdict,
+          verdictStreak: updated.verdictStreak,
+          recordedAt: now.toISOString(),
+        });
+      }
+
+      const refreshedGoals = await reviewSvc.listOwnedActiveGoals(agent);
+      const attentionGoalCount = refreshedGoals.filter(isAttentionGoal).length;
+      await reviewSvc.stampGoalReviewState(agent, {
+        lastEvaluatedAt: now.toISOString(),
+        attentionGoalCount,
+      });
+
+      res.json(recordGoalVerdictsResponseSchema.parse({
+        agentId: agent.id,
+        recordedCount: results.length,
+        attentionGoalCount,
+        planningIssues,
+        results,
+      }));
+    },
+  );
 
   router.get("/agents/me/inbox/mine", async (req, res) => {
     if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.companyId) {

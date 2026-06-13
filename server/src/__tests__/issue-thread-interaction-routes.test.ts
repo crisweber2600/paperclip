@@ -9,6 +9,10 @@ const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
 
+const mockDocumentService = vi.hoisted(() => ({
+  getIssueDocumentByKey: vi.fn(),
+}));
+
 const mockInteractionService = vi.hoisted(() => ({
   listForIssue: vi.fn(),
   create: vi.fn(),
@@ -74,7 +78,7 @@ function registerModuleMocks() {
     ISSUE_LIST_DEFAULT_LIMIT: 500,
     ISSUE_LIST_MAX_LIMIT: 1000,
     documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
-    documentService: () => ({}),
+    documentService: () => mockDocumentService,
     executionWorkspaceService: () => ({}),
     feedbackService: () => ({
       listIssueVotesForUser: vi.fn(async () => []),
@@ -175,6 +179,26 @@ describe.sequential("issue thread interaction routes", () => {
     registerModuleMocks();
     vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue(createIssue());
+    mockDocumentService.getIssueDocumentByKey.mockResolvedValue({
+      id: "document-routine-proposal",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      key: "routine-proposal",
+      title: "Routine Proposal",
+      format: "markdown",
+      body: "# Routine proposal",
+      latestRevisionId: "revision-routine-proposal",
+      latestRevisionNumber: 3,
+      createdByAgentId: CREATED_AGENT_ID,
+      createdByUserId: null,
+      updatedByAgentId: CREATED_AGENT_ID,
+      updatedByUserId: null,
+      lockedAt: null,
+      lockedByAgentId: null,
+      lockedByUserId: null,
+      createdAt: new Date("2026-04-20T12:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T12:05:00.000Z"),
+    });
     mockInteractionService.listForIssue.mockResolvedValue([]);
     mockInteractionService.expireRequestConfirmationsSupersededByHistoricalComments.mockResolvedValue([]);
     mockInteractionService.create.mockResolvedValue({
@@ -895,6 +919,81 @@ describe.sequential("issue thread interaction routes", () => {
         kind: "suggest_tasks",
         idempotencyKey: "interaction:task-1",
         sourceRunId: "run-1",
+      }),
+      {
+        agentId: CREATED_AGENT_ID,
+        userId: null,
+      },
+    );
+  });
+
+  it("creates docs-to-routines proposal review confirmations bound to the proposal document", async () => {
+    mockInteractionService.create.mockResolvedValueOnce({
+      id: "interaction-routine-review",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee_on_accept",
+      idempotencyKey: "confirmation:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa:routine-proposal:revision-routine-proposal",
+      sourceCommentId: null,
+      sourceRunId: "run-routine-review",
+      payload: {
+        version: 1,
+        prompt: "Approve this routine proposal?",
+        acceptLabel: "Approve proposal",
+        rejectLabel: "Request changes",
+        allowDeclineReason: true,
+        supersedeOnUserComment: true,
+        target: {
+          type: "issue_document",
+          issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          documentId: "document-routine-proposal",
+          key: "routine-proposal",
+          revisionId: "revision-routine-proposal",
+          revisionNumber: 3,
+          label: "Routine Proposal",
+          href: "#document-routine-proposal",
+        },
+      },
+      result: null,
+      createdAt: "2026-04-20T12:00:00.000Z",
+      updatedAt: "2026-04-20T12:00:00.000Z",
+      resolvedAt: null,
+    });
+
+    const app = await createApp({
+      type: "agent",
+      agentId: CREATED_AGENT_ID,
+      companyId: "company-1",
+      runId: "run-routine-review",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/docs-to-routines/proposal-review")
+      .send({
+        proposalDocumentKey: "routine-proposal",
+        prompt: "Approve this routine proposal?",
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockDocumentService.getIssueDocumentByKey).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "routine-proposal",
+    );
+    expect(mockInteractionService.create).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
+      expect.objectContaining({
+        kind: "request_confirmation",
+        continuationPolicy: "wake_assignee_on_accept",
+        payload: expect.objectContaining({
+          prompt: "Approve this routine proposal?",
+          target: expect.objectContaining({
+            type: "issue_document",
+            key: "routine-proposal",
+            revisionId: "revision-routine-proposal",
+          }),
+        }),
       }),
       {
         agentId: CREATED_AGENT_ID,

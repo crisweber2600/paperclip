@@ -3,7 +3,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import type {
   DocumentRevision,
   ExecutionWorkspaceCloseReadiness,
-  Goal,
+  GoalOperatorView,
   IssueAttachment,
 } from "@paperclipai/shared";
 import { useQueryClient } from "@tanstack/react-query";
@@ -35,7 +35,7 @@ const COMPANY_ID = "company-storybook";
 const SELECTED_COMPANY_STORAGE_KEY = "paperclip.selectedCompanyId";
 const ISSUE_DRAFT_STORAGE_KEY = "paperclip:issue-draft";
 
-const storybookGoals: Goal[] = [
+const storybookGoals: GoalOperatorView[] = [
   {
     id: "goal-company",
     companyId: COMPANY_ID,
@@ -45,8 +45,18 @@ const storybookGoals: Goal[] = [
     status: "active",
     parentId: null,
     ownerAgentId: "agent-cto",
-    createdAt: new Date("2026-04-01T09:00:00.000Z"),
-    updatedAt: new Date("2026-04-20T11:00:00.000Z"),
+    acceptanceCriteria: [],
+    lastVerdict: null,
+    lastVerdictReason: null,
+    lastVerdictAt: null,
+    lastVerdictByAgentId: null,
+    verdictStreak: 0,
+    pauseReason: null,
+    pausedAt: null,
+    createdAt: "2026-04-01T09:00:00.000Z",
+    updatedAt: "2026-04-20T11:00:00.000Z",
+    executionPath: { openIssueCount: 1, openProjectCount: 1, hasExecutionPath: true },
+    needsPlanning: false,
   },
   {
     id: "goal-storybook",
@@ -57,8 +67,18 @@ const storybookGoals: Goal[] = [
     status: "active",
     parentId: "goal-company",
     ownerAgentId: "agent-codex",
-    createdAt: new Date("2026-04-17T09:00:00.000Z"),
-    updatedAt: new Date("2026-04-20T11:10:00.000Z"),
+    acceptanceCriteria: [],
+    lastVerdict: null,
+    lastVerdictReason: null,
+    lastVerdictAt: null,
+    lastVerdictByAgentId: null,
+    verdictStreak: 0,
+    pauseReason: null,
+    pausedAt: null,
+    createdAt: "2026-04-17T09:00:00.000Z",
+    updatedAt: "2026-04-20T11:10:00.000Z",
+    executionPath: { openIssueCount: 0, openProjectCount: 1, hasExecutionPath: true },
+    needsPlanning: false,
   },
   {
     id: "goal-governance",
@@ -69,8 +89,18 @@ const storybookGoals: Goal[] = [
     status: "planned",
     parentId: "goal-company",
     ownerAgentId: "agent-cto",
-    createdAt: new Date("2026-04-18T09:00:00.000Z"),
-    updatedAt: new Date("2026-04-20T11:15:00.000Z"),
+    acceptanceCriteria: [],
+    lastVerdict: null,
+    lastVerdictReason: null,
+    lastVerdictAt: null,
+    lastVerdictByAgentId: null,
+    verdictStreak: 0,
+    pauseReason: null,
+    pausedAt: null,
+    createdAt: "2026-04-18T09:00:00.000Z",
+    updatedAt: "2026-04-20T11:15:00.000Z",
+    executionPath: { openIssueCount: 0, openProjectCount: 0, hasExecutionPath: false },
+    needsPlanning: false,
   },
 ];
 

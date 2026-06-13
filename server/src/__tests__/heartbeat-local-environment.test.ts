@@ -7,6 +7,7 @@ import {
   createDb,
   environmentLeases,
   environments,
+  goals,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -77,6 +78,7 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
         "agent_wakeup_requests",
         "agent_runtime_state",
         "company_skills",
+        "goals",
         "agents",
         "companies"
       RESTART IDENTITY CASCADE
@@ -141,6 +143,65 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
       name: "Local",
       driver: "local",
       leaseId: leases[0]?.id,
+    });
+  });
+
+  it("forces goal-review context for unscoped manual runs", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const goalId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CEO",
+      role: "ceo",
+      status: "idle",
+      adapterType: "process",
+      adapterConfig: {
+        command: process.execPath,
+        args: ["-e", "process.exit(0)"],
+      },
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Drive the company goal",
+      status: "active",
+      level: "company",
+      ownerAgentId: null,
+      acceptanceCriteria: ["Make visible progress"],
+    });
+
+    const heartbeat = heartbeatService(db);
+
+    const firstRun = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    expect(firstRun).not.toBeNull();
+    const firstFinished = await waitForRunToFinish(heartbeat, firstRun!.id);
+    expect(firstFinished?.status).toBe("succeeded");
+    const firstContext = (firstFinished?.contextSnapshot ?? {}) as Record<string, unknown>;
+    expect(firstContext.paperclipGoalReview).toMatchObject({
+      ownedActiveGoalCount: 1,
+    });
+
+    const secondRun = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    expect(secondRun).not.toBeNull();
+    const secondFinished = await waitForRunToFinish(heartbeat, secondRun!.id);
+    expect(secondFinished?.status).toBe("succeeded");
+    const secondContext = (secondFinished?.contextSnapshot ?? {}) as Record<string, unknown>;
+    expect(secondContext.paperclipGoalReview).toMatchObject({
+      ownedActiveGoalCount: 1,
     });
   });
 });

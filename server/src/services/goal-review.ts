@@ -1,15 +1,20 @@
-import { and, count, eq, inArray, notInArray, sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agentRuntimeState, issues, projectGoals, projects } from "@paperclipai/db";
-import { goalService } from "./goals.js";
-
-// Issue statuses that still count as "someone is advancing this goal".
-// backlog/blocked are intentionally open: a parked plan still proves the goal
-// was converted into work — the gap signal is "nothing at all links to it".
-const TERMINAL_ISSUE_STATUSES = ["done", "cancelled"];
-const OPEN_PROJECT_STATUSES = ["backlog", "planned", "in_progress"];
+import { agentRuntimeState } from "@paperclipai/db";
+import {
+  goalReviewRuntimeStateSchema,
+  goalReviewWakeContextSchema,
+  type GoalReviewRuntimeState,
+  type GoalReviewWakeContext,
+} from "@paperclipai/shared";
+import { goalService, parseAcceptanceCriteria } from "./goals.js";
 
 export const DEFAULT_GOAL_REVIEW_INTERVAL_HOURS = 4;
+// Tighter cadence while the owner has stalled/blocked goals needing attention.
+export const DEFAULT_GOAL_REVIEW_STALLED_INTERVAL_HOURS = 1;
+// Hermes-style turn budget: consecutive stalled/blocked verdicts on the same
+// goal stop escalating once the streak reaches this cap.
+export const DEFAULT_GOAL_REVIEW_MAX_VERDICT_STREAK = 6;
 export const GOAL_REVIEW_WAKE_GOAL_CAP = 5;
 
 export function getGoalReviewIntervalHours() {
@@ -17,28 +22,31 @@ export function getGoalReviewIntervalHours() {
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_GOAL_REVIEW_INTERVAL_HOURS;
 }
 
-export interface GoalExecutionPath {
-  openIssueCount: number;
-  openProjectCount: number;
-  hasExecutionPath: boolean;
+export function getGoalReviewStalledIntervalHours() {
+  const raw = Number(process.env.PAPERCLIP_GOAL_REVIEW_STALLED_INTERVAL_HOURS);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_GOAL_REVIEW_STALLED_INTERVAL_HOURS;
 }
 
-export interface GoalReviewRuntimeState {
-  lastEvaluatedAt?: string;
-  lastSurfacedAt?: string;
-  lastCheckedAt?: string;
+export function getGoalReviewMaxVerdictStreak() {
+  const raw = Number(process.env.PAPERCLIP_GOAL_REVIEW_MAX_VERDICT_STREAK);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_GOAL_REVIEW_MAX_VERDICT_STREAK;
+}
+
+const ATTENTION_VERDICTS = new Set(["stalled", "blocked"]);
+
+export function isAttentionGoal(goal: { lastVerdict: string | null; verdictStreak: number }) {
+  return (
+    goal.lastVerdict !== null &&
+    ATTENTION_VERDICTS.has(goal.lastVerdict) &&
+    goal.verdictStreak < getGoalReviewMaxVerdictStreak()
+  );
 }
 
 export function parseGoalReviewRuntimeState(stateJson: unknown): GoalReviewRuntimeState {
   if (!stateJson || typeof stateJson !== "object") return {};
   const raw = (stateJson as Record<string, unknown>).goalReview;
-  if (!raw || typeof raw !== "object") return {};
-  const parsed: GoalReviewRuntimeState = {};
-  for (const key of ["lastEvaluatedAt", "lastSurfacedAt", "lastCheckedAt"] as const) {
-    const value = (raw as Record<string, unknown>)[key];
-    if (typeof value === "string" && value.length > 0) parsed[key] = value;
-  }
-  return parsed;
+  const parsed = goalReviewRuntimeStateSchema.safeParse(raw);
+  return parsed.success ? parsed.data : {};
 }
 
 export function isGoalReviewDue(input: {
@@ -46,7 +54,11 @@ export function isGoalReviewDue(input: {
   now: Date;
   intervalHours?: number;
 }) {
-  const intervalMs = (input.intervalHours ?? getGoalReviewIntervalHours()) * 60 * 60 * 1000;
+  const defaultIntervalHours =
+    (input.state.attentionGoalCount ?? 0) > 0
+      ? getGoalReviewStalledIntervalHours()
+      : getGoalReviewIntervalHours();
+  const intervalMs = (input.intervalHours ?? defaultIntervalHours) * 60 * 60 * 1000;
   const timestamps = [
     input.state.lastEvaluatedAt,
     input.state.lastSurfacedAt,
@@ -61,77 +73,6 @@ export function isGoalReviewDue(input: {
 export function goalReviewService(db: Db) {
   const goalsSvc = goalService(db);
 
-  async function getExecutionPaths(
-    companyId: string,
-    goalIds: string[],
-  ): Promise<Map<string, GoalExecutionPath>> {
-    const result = new Map<string, GoalExecutionPath>(
-      goalIds.map((id) => [id, { openIssueCount: 0, openProjectCount: 0, hasExecutionPath: false }]),
-    );
-    if (goalIds.length === 0) return result;
-
-    const [issueRows, legacyProjectRows, linkedProjectRows] = await Promise.all([
-      db
-        .select({ goalId: issues.goalId, openIssueCount: count() })
-        .from(issues)
-        .where(
-          and(
-            eq(issues.companyId, companyId),
-            inArray(issues.goalId, goalIds),
-            notInArray(issues.status, TERMINAL_ISSUE_STATUSES),
-          ),
-        )
-        .groupBy(issues.goalId),
-      db
-        .select({ goalId: projects.goalId, projectId: projects.id })
-        .from(projects)
-        .where(
-          and(
-            eq(projects.companyId, companyId),
-            inArray(projects.goalId, goalIds),
-            inArray(projects.status, OPEN_PROJECT_STATUSES),
-          ),
-        ),
-      db
-        .select({ goalId: projectGoals.goalId, projectId: projectGoals.projectId })
-        .from(projectGoals)
-        .innerJoin(projects, eq(projectGoals.projectId, projects.id))
-        .where(
-          and(
-            eq(projectGoals.companyId, companyId),
-            eq(projects.companyId, companyId),
-            inArray(projectGoals.goalId, goalIds),
-            inArray(projects.status, OPEN_PROJECT_STATUSES),
-          ),
-        ),
-    ]);
-
-    for (const row of issueRows) {
-      if (!row.goalId) continue;
-      const entry = result.get(row.goalId);
-      if (entry) entry.openIssueCount = Number(row.openIssueCount ?? 0);
-    }
-
-    // Union of legacy projects.goalId and the project_goals join table,
-    // deduped per goal since both can reference the same project.
-    const projectIdsByGoal = new Map<string, Set<string>>();
-    for (const row of [...legacyProjectRows, ...linkedProjectRows]) {
-      if (!row.goalId) continue;
-      const set = projectIdsByGoal.get(row.goalId) ?? new Set<string>();
-      set.add(row.projectId);
-      projectIdsByGoal.set(row.goalId, set);
-    }
-    for (const [goalId, projectIds] of projectIdsByGoal) {
-      const entry = result.get(goalId);
-      if (entry) entry.openProjectCount = projectIds.size;
-    }
-
-    for (const entry of result.values()) {
-      entry.hasExecutionPath = entry.openIssueCount > 0 || entry.openProjectCount > 0;
-    }
-    return result;
-  }
-
   async function listOwnedActiveGoals(agent: { id: string; companyId: string; role: string }) {
     return goalsSvc.listActiveOwnedByAgent(agent.companyId, agent.id, {
       // The CEO is also accountable for active company-level goals nobody owns.
@@ -141,17 +82,21 @@ export function goalReviewService(db: Db) {
 
   async function buildGoalReview(agent: { id: string; companyId: string; role: string }) {
     const ownedGoals = await listOwnedActiveGoals(agent);
-    const executionPaths = await getExecutionPaths(
+    const executionPaths = await goalsSvc.getExecutionPaths(
       agent.companyId,
       ownedGoals.map((goal) => goal.id),
     );
     const ancestorsByGoal = await Promise.all(
       ownedGoals.map((goal) => goalsSvc.getAncestors(goal.id)),
     );
+    const now = new Date();
+    const verdictStaleMs = getGoalReviewIntervalHours() * 60 * 60 * 1000;
     return ownedGoals.map((goal, index) => {
-      const executionPath =
-        executionPaths.get(goal.id) ??
-        ({ openIssueCount: 0, openProjectCount: 0, hasExecutionPath: false } satisfies GoalExecutionPath);
+      const executionPath = executionPaths.get(goal.id) ?? {
+        openIssueCount: 0,
+        openProjectCount: 0,
+        hasExecutionPath: false,
+      };
       return {
         id: goal.id,
         title: goal.title,
@@ -160,6 +105,15 @@ export function goalReviewService(db: Db) {
         status: goal.status,
         parentId: goal.parentId,
         ownerAgentId: goal.ownerAgentId,
+        acceptanceCriteria: parseAcceptanceCriteria(goal.acceptanceCriteria),
+        lastVerdict: goal.lastVerdict,
+        lastVerdictReason: goal.lastVerdictReason,
+        lastVerdictAt: goal.lastVerdictAt,
+        verdictStreak: goal.verdictStreak,
+        verdictStale:
+          !goal.lastVerdictAt || now.getTime() - goal.lastVerdictAt.getTime() > verdictStaleMs,
+        pausedAt: goal.pausedAt,
+        pauseReason: goal.pauseReason,
         ancestors: ancestorsByGoal[index].map((ancestor) => ({
           id: ancestor.id,
           title: ancestor.title,
@@ -175,21 +129,31 @@ export function goalReviewService(db: Db) {
   async function buildGoalReviewWakeSummary(agent: { id: string; companyId: string; role: string }) {
     const ownedGoals = await listOwnedActiveGoals(agent);
     if (ownedGoals.length === 0) return null;
-    const executionPaths = await getExecutionPaths(
+    const executionPaths = await goalsSvc.getExecutionPaths(
       agent.companyId,
       ownedGoals.map((goal) => goal.id),
     );
     const goalsWithoutExecutionPath = ownedGoals.filter(
       (goal) => !(executionPaths.get(goal.id)?.hasExecutionPath ?? false),
     );
-    return {
+    // Goals whose last verdict was stalled/blocked and still under the streak
+    // cap; exhausted goals drop out, which is the turn-budget enforcement.
+    const attentionGoals = ownedGoals.filter(isAttentionGoal);
+    return goalReviewWakeContextSchema.parse({
       due: true,
       ownedActiveGoalCount: ownedGoals.length,
       goalsWithoutExecutionPathCount: goalsWithoutExecutionPath.length,
       goalsWithoutExecutionPath: goalsWithoutExecutionPath
         .slice(0, GOAL_REVIEW_WAKE_GOAL_CAP)
         .map((goal) => ({ id: goal.id, title: goal.title })),
-    };
+      attentionGoalCount: attentionGoals.length,
+      attentionGoals: attentionGoals.slice(0, GOAL_REVIEW_WAKE_GOAL_CAP).map((goal) => ({
+        id: goal.id,
+        title: goal.title,
+        lastVerdict: goal.lastVerdict,
+        verdictStreak: goal.verdictStreak,
+      })),
+    });
   }
 
   async function getGoalReviewState(agentId: string): Promise<GoalReviewRuntimeState> {
@@ -240,7 +204,8 @@ export function goalReviewService(db: Db) {
   }
 
   return {
-    getExecutionPaths,
+    getExecutionPaths: (companyId: string, goalIds: string[]) =>
+      goalsSvc.getExecutionPaths(companyId, goalIds),
     listOwnedActiveGoals,
     buildGoalReview,
     buildGoalReviewWakeSummary,
