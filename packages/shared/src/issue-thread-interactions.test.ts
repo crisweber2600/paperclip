@@ -103,6 +103,31 @@ describe("issue thread interaction schemas", () => {
     }
   });
 
+  it("accepts issue work product targets for request_confirmation interactions", () => {
+    const parsed = createIssueThreadInteractionSchema.parse({
+      kind: "request_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Approve this proposal artifact?",
+        target: {
+          type: "issue_work_product",
+          issueId: "11111111-1111-4111-8111-111111111111",
+          workProductId: "22222222-2222-4222-8222-222222222222",
+          label: "Routine proposal artifact",
+          href: "/issues/PAP-123#work-product-22222222-2222-4222-8222-222222222222",
+        },
+      },
+    });
+
+    expect(parsed.kind).toBe("request_confirmation");
+    if (parsed.kind !== "request_confirmation") return;
+    expect(parsed.payload.target).toMatchObject({
+      type: "issue_work_product",
+      workProductId: "22222222-2222-4222-8222-222222222222",
+      label: "Routine proposal artifact",
+    });
+  });
+
   it("rejects unsafe request_confirmation target hrefs", () => {
     const base = {
       kind: "request_confirmation",

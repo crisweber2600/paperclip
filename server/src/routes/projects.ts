@@ -1,5 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
+import { and, eq } from "drizzle-orm";
+import { documents, documentRevisions, issueComments, issues, issueWorkProducts } from "@paperclipai/db";
 import {
   createProjectSchema,
   createProjectWorkspaceSchema,
@@ -15,6 +17,7 @@ import { trackProjectCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import { accessService, projectService, logActivity, workspaceOperationService } from "../services/index.js";
 import { conflict, forbidden } from "../errors.js";
+import { unprocessable } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
@@ -52,6 +55,58 @@ export function projectRoutes(db: Db) {
     await assertEnvironmentSelectionForCompany(environmentsSvc, companyId, environmentId, {
       allowedDrivers: ["local", "ssh", "sandbox"],
     });
+  }
+
+  async function assertProjectEvidenceCompanyScoped(companyId: string, payload: Record<string, unknown>) {
+    const governingArtifacts = Array.isArray(payload.governingArtifacts) ? payload.governingArtifacts as Array<Record<string, unknown>> : [];
+    const acceptanceEvidence = Array.isArray(payload.acceptanceEvidence) ? payload.acceptanceEvidence as Array<Record<string, unknown>> : [];
+    for (const reference of governingArtifacts) {
+      const kind = typeof reference.kind === "string" ? reference.kind : null;
+      const artifactId = typeof reference.artifactId === "string" ? reference.artifactId : null;
+      if (!kind || !artifactId) continue;
+      if (kind === "document_revision") {
+        const row = await db.select({ id: documents.id }).from(documents).innerJoin(documentRevisions, eq(documentRevisions.documentId, documents.id))
+          .where(and(eq(documents.companyId, companyId), eq(documentRevisions.companyId, companyId), eq(documentRevisions.id, artifactId)))
+          .then((rows) => rows[0] ?? null);
+        if (!row) throw unprocessable("Project governing artifact must belong to the same company", { code: "invalid_governing_artifact", artifactId });
+        continue;
+      }
+      const row = await db.select({ id: issueWorkProducts.id }).from(issueWorkProducts)
+        .where(and(eq(issueWorkProducts.companyId, companyId), eq(issueWorkProducts.id, artifactId)))
+        .then((rows) => rows[0] ?? null);
+      if (!row) throw unprocessable("Project governing artifact must belong to the same company", { code: "invalid_governing_artifact", artifactId });
+    }
+
+    for (const evidence of acceptanceEvidence) {
+      const kind = typeof evidence.kind === "string" ? evidence.kind : null;
+      const artifactId = typeof evidence.artifactId === "string" ? evidence.artifactId : null;
+      if (!kind || !artifactId) continue;
+      if (kind === "issue") {
+        const row = await db.select({ id: issues.id }).from(issues)
+          .where(and(eq(issues.companyId, companyId), eq(issues.id, artifactId)))
+          .then((rows) => rows[0] ?? null);
+        if (!row) throw unprocessable("Project acceptance evidence issue must belong to the same company", { code: "invalid_acceptance_evidence", artifactId });
+        continue;
+      }
+      if (kind === "comment") {
+        const row = await db.select({ id: issueComments.id }).from(issueComments)
+          .where(and(eq(issueComments.companyId, companyId), eq(issueComments.id, artifactId)))
+          .then((rows) => rows[0] ?? null);
+        if (!row) throw unprocessable("Project acceptance evidence comment must belong to the same company", { code: "invalid_acceptance_evidence", artifactId });
+        continue;
+      }
+      if (kind === "document_revision") {
+        const row = await db.select({ id: documents.id }).from(documents).innerJoin(documentRevisions, eq(documentRevisions.documentId, documents.id))
+          .where(and(eq(documents.companyId, companyId), eq(documentRevisions.companyId, companyId), eq(documentRevisions.id, artifactId)))
+          .then((rows) => rows[0] ?? null);
+        if (!row) throw unprocessable("Project acceptance evidence document revision must belong to the same company", { code: "invalid_acceptance_evidence", artifactId });
+        continue;
+      }
+      const row = await db.select({ id: issueWorkProducts.id }).from(issueWorkProducts)
+        .where(and(eq(issueWorkProducts.companyId, companyId), eq(issueWorkProducts.id, artifactId)))
+        .then((rows) => rows[0] ?? null);
+      if (!row) throw unprocessable("Project acceptance evidence work product must belong to the same company", { code: "invalid_acceptance_evidence", artifactId });
+    }
   }
 
   function readProjectPolicyEnvironmentId(policy: unknown): string | null | undefined {
@@ -165,6 +220,7 @@ export function projectRoutes(db: Db) {
         { strictMode: strictSecretsMode, fieldPath: "env" },
       );
     }
+    await assertProjectEvidenceCompanyScoped(companyId, projectData);
     const project = await svc.create(companyId, projectData);
     if (project.env) {
       await secretsSvc.syncEnvBindingsForTarget?.(
@@ -233,6 +289,7 @@ export function projectRoutes(db: Db) {
         fieldPath: "env",
       });
     }
+    await assertProjectEvidenceCompanyScoped(existing.companyId, body);
     const project = await svc.update(id, body);
     if (!project) {
       res.status(404).json({ error: "Project not found" });

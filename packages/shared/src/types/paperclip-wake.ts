@@ -1,0 +1,17 @@
+export type {
+  PaperclipWakeIssueGoalAncestor,
+  PaperclipWakeIssueGoal,
+  PaperclipWakeIssue,
+  PaperclipWakeExecutionPrincipal,
+  PaperclipWakeExecutionStage,
+  PaperclipWakeComment,
+  PaperclipWakeContinuationSummary,
+  PaperclipWakeLivenessContinuation,
+  PaperclipWakeChildIssueSummary,
+  PaperclipWakeBlockerSummary,
+  PaperclipWakeTreeHoldSummary,
+  PaperclipWakeGoalReviewGoalRef,
+  PaperclipWakeGoalReviewAttentionGoal,
+  PaperclipWakeGoalReview,
+  PaperclipWakePayload,
+} from "../validators/heartbeat.js";

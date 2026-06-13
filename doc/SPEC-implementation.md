@@ -191,9 +191,18 @@ Invariant: plaintext key shown once at creation; only hash stored.
 - `level` enum: `company | team | agent | task`
 - `parent_id` uuid fk `goals.id` null
 - `owner_agent_id` uuid fk `agents.id` null
+- `acceptance_criteria` jsonb not null default `[]`
+- review fields: `last_verdict`, `last_verdict_reason`, `last_verdict_at`, `last_verdict_by_agent_id`, `verdict_streak`
+- pause fields: `pause_reason`, `paused_at`
+- `created_at` timestamptz not null
+- `updated_at` timestamptz not null
 - `status` enum: `planned | active | achieved | cancelled`
 
-Invariant: at least one root `company` level goal per company.
+Invariants:
+
+- at least one root `company` level goal per company
+- active goals should have a live execution path through linked open issues or projects; when they do not, operator and agent goal-review surfaces report `needsPlanning: true`
+- goal review must preserve a singleton active planning path per goal: create or reuse exactly one goal-linked planning issue when an active goal lacks an execution path
 
 ## 7.5 `projects`
 
@@ -484,6 +493,14 @@ V1 non-terminal liveness rule:
 - a blocked chain is covered only when each unresolved leaf issue is live or explicitly waiting
 - when Paperclip cannot safely infer the next action, it surfaces the problem through visible blocked/recovery work instead of silently completing or reassigning work
 - explicit recovery actions are the liveness primitive; source-scoped actions are the default form, issue-backed recovery is a fallback for independent repair work or safety boundaries, and comments alone are evidence rather than a healthy liveness path
+
+V1 goal-execution rule:
+
+- active goals must not be left without an inspectable execution path
+- an inspectable execution path means open goal-linked issue/project work, or an explicit blocked/recovery path that names what happens next
+- when the goal-review surface reports `needsPlanning: true`, the first non-`done` review submission must ensure exactly one active goal-linked planning issue exists
+- reusing an existing active planning issue is required; creating duplicate active planning issues for the same goal is invalid
+- a goal-review verdict of `done` records evidence only and does not itself transition the goal to `achieved`
 
 Detailed ownership, execution, blocker, active-run watchdog, crash-recovery, and non-terminal liveness semantics are documented in `doc/execution-semantics.md`.
 

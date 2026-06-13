@@ -1395,6 +1395,24 @@ export function registerCompanyCommands(program: Command): void {
       .option("--paperclip-url <url>", "Alias for --api-base on this command")
       .option("--yes", "Accept default selection and skip the pre-import confirmation prompt", false)
       .option("--dry-run", "Run preview only without applying", false)
+      .addHelpText(
+        "after",
+        [
+          "",
+          "Prepared package sources:",
+          "  - local folder rooted at COMPANY.md (with optional .paperclip.yaml)",
+          "  - local .zip exported from `paperclipai company export` or assembled manually",
+          "  - GitHub repo/folder containing that package shape",
+          "",
+          "Recommended operator flow:",
+          "  1. Preview first: `paperclipai company import ./prepared-company --dry-run`",
+          "  2. Apply to a new company: `paperclipai company import ./prepared-company --target new --yes`",
+          "  3. Apply to an existing company: `paperclipai company import paperclipai/companies/demo --target existing -C <company-id> --dry-run`",
+          "",
+          "GitHub sources accept either full URLs or owner/repo[/path] shorthand.",
+          "Use `--ref` to pin a branch, tag, or commit for reproducible imports.",
+        ].join("\n"),
+      )
       .action(async (fromPathOrUrl: string, opts: CompanyImportOptions) => {
         try {
           if (!opts.apiBase?.trim() && opts.paperclipUrl?.trim()) {

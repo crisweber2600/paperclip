@@ -96,6 +96,10 @@ export function getRequestConfirmationTargetHref({
     const targetIssueId = target.issueId ?? issueId;
     return `/issues/${targetIssueId}#document-${encodeURIComponent(target.key)}`;
   }
+  if (target.type === "issue_work_product") {
+    const targetIssueId = target.issueId ?? issueId;
+    return `/issues/${targetIssueId}#work-product-${encodeURIComponent(target.workProductId)}`;
+  }
   return null;
 }
 
@@ -119,6 +123,13 @@ export function buildIssueThreadInteractionSummary(
   }
 
   if (interaction.kind === "request_confirmation") {
+    const target = interaction.payload.target;
+    const targetLabel = target?.label
+      ?? (target?.type === "issue_work_product"
+        ? "proposal artifact"
+        : target?.type === "issue_document"
+          ? target.key
+          : "request");
     if (interaction.status === "accepted") return "Confirmed request";
     if (interaction.status === "rejected") return "Declined request";
     if (interaction.status === "expired") {
@@ -127,7 +138,9 @@ export function buildIssueThreadInteractionSummary(
       if (outcome === "stale_target") return "Confirmation expired after target changed";
       return "Confirmation expired";
     }
-    return "Requested confirmation";
+    return target?.type === "issue_work_product"
+      ? `Requested confirmation for ${targetLabel}`
+      : "Requested confirmation";
   }
 
   if (interaction.kind === "request_checkbox_confirmation") {

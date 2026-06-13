@@ -93,6 +93,35 @@ describe("successful run handoff decision", () => {
     expect(decision.instruction).toContain("record an explicit continuation path");
   });
 
+  it("carries prior goal-review context into later corrective handoff heartbeats", () => {
+    const decision = decide({
+      run: {
+        ...run,
+        contextSnapshot: {
+          issueId: "issue-1",
+          paperclipGoalReview: {
+            due: true,
+            ownedActiveGoalCount: 1,
+            goalsWithoutExecutionPathCount: 1,
+            goalsWithoutExecutionPath: [{ id: "goal-1", title: "Ship it" }],
+            attentionGoalCount: 0,
+            attentionGoals: [],
+          },
+        },
+      } as any,
+    });
+
+    expect(decision.kind).toBe("enqueue");
+    if (decision.kind !== "enqueue") return;
+    expect(decision.contextSnapshot).toMatchObject({
+      paperclipGoalReview: {
+        due: true,
+        ownedActiveGoalCount: 1,
+        goalsWithoutExecutionPathCount: 1,
+      },
+    });
+  });
+
   it("does not queue when the issue already has a valid disposition", () => {
     expect(decide({ issue: { ...issue, status: "done" } as any })).toEqual({
       kind: "skip",

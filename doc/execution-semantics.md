@@ -258,6 +258,33 @@ Issue document comments, document annotation comments, and document review comme
 
 Document-scoped activity may still route work when it is converted into an explicit action-path primitive. Valid routing exceptions include:
 
+## 9. Goal-Review Execution Semantics
+
+Goal review is not only an agent prompt ritual. For owned active goals, Paperclip must enforce the execution-path contract server-side when the owner records goal-review verdicts.
+
+- `done` is evidence-only. It may be recorded only with an explicit completion reason, and it does not by itself mark the goal achieved; the owner must still PATCH the goal to `status: "achieved"`.
+- `progressing` means there is a live execution path and recent movement. It should not create new planning work when the goal already has a path.
+- `stalled` requires a concrete lack-of-progress reason.
+- `blocked` requires a named dependency path or explicit unblock owner/action.
+
+For any active goal whose review surface reports `needsPlanning: true`, the first non-`done` goal-review verdict must ensure exactly one active planning issue exists for that goal.
+
+- If an active goal-linked planning issue already exists, goal review must reuse it and must not create a sibling planning issue.
+- If none exists, goal review must create one goal-linked planning issue (`workMode: "planning"`) before returning success.
+- Duplicate active planning issues for the same goal are a product bug. The create-issue path and the goal-review path must both preserve the singleton contract.
+
+This means a goal review that identifies a planning gap must convert that gap into a concrete execution path immediately rather than leaving it to prompt-following alone.
+
+### Acceptance expectations
+
+The acceptance bar for goal-driven execution is inspectability, not aspirational prose.
+
+- Operators should be able to inspect an active goal and determine whether it has a live execution path, whether it needs planning, and what verdict history led to its current state.
+- Reviewers should be able to confirm that a goal with `needsPlanning: true` either reuses one active goal-linked planning issue or causes one to be created as part of the review flow.
+- Reviewers should also be able to confirm that active goals are not considered healthy merely because someone commented about next steps. Comments are evidence; issues, blockers, typed interactions, approvals, runs, and recovery actions are the control-plane path.
+
+An implementation that leaves active goals without open execution work, or that relies on prompt discipline instead of server-enforced planning-path creation, does not satisfy the goal-driven V1 contract.
+
 - an issue mention or structured agent mention that intentionally wakes or assigns a named participant
 - a document-review assignment that names a reviewer or assignee for the review state
 - a response to an issue-thread interaction, such as `request_confirmation`, `ask_user_questions`, or `suggest_tasks`

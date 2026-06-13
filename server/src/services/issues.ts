@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
-import { and, asc, desc, eq, gt, inArray, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, like, lt, ne, not, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -75,6 +75,7 @@ import { redactSensitiveText } from "../redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
 import { getRunLogStore } from "./run-log-store.js";
 import { getDefaultCompanyGoal } from "./goals.js";
+import { isPlanningIssueForGoal } from "./goal-review-semantics.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
 import {
   isVerifiedIssueTreeControlInteractionWake,
@@ -100,6 +101,33 @@ const ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES = 256_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS = 60_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS = 8;
 const DELETED_ISSUE_COMMENT_BODY = "";
+
+async function assertNoDuplicateActivePlanningIssueForGoal(
+  tx: Db | any,
+  input: { companyId: string; goalId: string; parentId?: string | null },
+) {
+  await tx.execute(sql`select ${goals.id} from ${goals} where ${goals.id} = ${input.goalId} for update`);
+  const duplicate = await tx
+    .select({ id: issues.id, identifier: issues.identifier, title: issues.title })
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, input.companyId),
+        eq(issues.goalId, input.goalId),
+        eq(issues.workMode, "planning"),
+        notInArray(issues.status, ["done", "cancelled"]),
+        input.parentId ? not(eq(issues.parentId, input.parentId)) : sql`true`,
+      ),
+    )
+    .orderBy(asc(issues.createdAt), asc(issues.id))
+    .then((rows: Array<{ id: string; identifier: string | null; title: string }>) => rows[0] ?? null);
+
+  if (duplicate) {
+    throw conflict(
+      `Active planning issue already exists for goal ${input.goalId}: ${duplicate.identifier ?? duplicate.id} ${duplicate.title}`,
+    );
+  }
+}
 function assertTransition(from: string, to: string) {
   if (from === to) return;
   if (!ALL_ISSUE_STATUSES.includes(to)) {
@@ -254,6 +282,7 @@ export interface IssueFilters {
   inboxArchivedByUserId?: string;
   unreadForUserId?: string;
   projectId?: string;
+  goalId?: string;
   workspaceId?: string;
   executionWorkspaceId?: string;
   parentId?: string;
@@ -302,7 +331,12 @@ type IssueScheduledRetryRow = {
   error?: string | null;
   errorCode?: string | null;
 };
-type IssueWithLabels = IssueRow & { labels: IssueLabelRow[]; labelIds: string[] };
+type IssueWithLabels = IssueRow & {
+  governingArtifacts?: Record<string, unknown>[] | null;
+  acceptanceEvidence?: Record<string, unknown>[] | null;
+  labels: IssueLabelRow[];
+  labelIds: string[];
+};
 type IssueWithLabelsAndRun = IssueWithLabels & { activeRun: IssueActiveRunRow | null };
 type IssueUserCommentStats = {
   issueId: string;
@@ -348,6 +382,7 @@ type IssueUserContextInput = {
   createdAt: Date | string;
   updatedAt: Date | string;
 };
+type IssueListRow = typeof issues.$inferSelect;
 type ProjectGoalReader = Pick<Db, "select">;
 type DbReader = Pick<Db, "select">;
 type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
@@ -1141,13 +1176,15 @@ async function labelMapForIssues(dbOrTx: any, issueIds: string[]): Promise<Map<s
   return map;
 }
 
-async function withIssueLabels(dbOrTx: any, rows: IssueRow[]): Promise<IssueWithLabels[]> {
+async function withIssueLabels<T extends { id: string; governingArtifacts?: Record<string, unknown>[] | null; acceptanceEvidence?: Record<string, unknown>[] | null }>(dbOrTx: any, rows: T[]): Promise<Array<T & { labels: IssueLabelRow[]; labelIds: string[] }>> {
   if (rows.length === 0) return [];
   const labelsByIssueId = await labelMapForIssues(dbOrTx, rows.map((row) => row.id));
   return rows.map((row) => {
     const issueLabels = labelsByIssueId.get(row.id) ?? [];
     return {
       ...row,
+      governingArtifacts: row.governingArtifacts ?? null,
+      acceptanceEvidence: row.acceptanceEvidence ?? null,
       labels: issueLabels,
       labelIds: issueLabels.map((label) => label.id),
     };
@@ -1244,9 +1281,9 @@ type IssueBlockerAttentionAgentRow = {
   status: string;
 };
 
-async function activeRunMapForIssues(
+async function activeRunMapForIssues<T extends { executionRunId?: string | null }>(
   dbOrTx: any,
-  issueRows: IssueWithLabels[],
+  issueRows: T[],
 ): Promise<Map<string, IssueActiveRunRow>> {
   const map = new Map<string, IssueActiveRunRow>();
   const runIds = issueRows
@@ -1957,6 +1994,8 @@ const issueListSelect = {
   executionWorkspaceId: issues.executionWorkspaceId,
   executionWorkspacePreference: issues.executionWorkspacePreference,
   executionWorkspaceSettings: sql<null>`null`,
+  governingArtifacts: issues.governingArtifacts,
+  acceptanceEvidence: issues.acceptanceEvidence,
   sourceTrust: issues.sourceTrust,
   startedAt: issues.startedAt,
   completedAt: issues.completedAt,
@@ -1966,10 +2005,10 @@ const issueListSelect = {
   updatedAt: issues.updatedAt,
 };
 
-function withActiveRuns(
-  issueRows: IssueWithLabels[],
+function withActiveRuns<T extends { id: string; executionRunId?: string | null }>(
+  issueRows: T[],
   runMap: Map<string, IssueActiveRunRow>,
-): IssueWithLabelsAndRun[] {
+): Array<T & { activeRun: IssueActiveRunRow | null }> {
   return issueRows.map((row) => ({
     ...row,
     activeRun: row.executionRunId ? (runMap.get(row.executionRunId) ?? null) : null,
@@ -2170,7 +2209,63 @@ const BLOCKED_INBOX_SUCCESSFUL_RUN_HANDOFF_ACTIONS = [
   "issue.successful_run_handoff_escalated",
 ] as const;
 
-type BlockedInboxIssueRow = IssueRow & { labels?: IssueLabelRow[]; labelIds?: string[] };
+type BlockedInboxIssueRow = Pick<
+  IssueListRow,
+  | "id"
+  | "companyId"
+  | "projectId"
+  | "goalId"
+  | "parentId"
+  | "title"
+  | "description"
+  | "status"
+  | "workMode"
+  | "priority"
+  | "assigneeAgentId"
+  | "assigneeUserId"
+  | "executionRunId"
+  | "createdByAgentId"
+  | "createdByUserId"
+  | "issueNumber"
+  | "identifier"
+  | "originKind"
+  | "originId"
+  | "originRunId"
+  | "originFingerprint"
+  | "requestDepth"
+  | "billingCode"
+  | "assigneeAdapterOverrides"
+  | "monitorNextCheckAt"
+  | "executionWorkspaceId"
+  | "executionWorkspacePreference"
+  | "governingArtifacts"
+  | "acceptanceEvidence"
+  | "sourceTrust"
+  | "startedAt"
+  | "completedAt"
+  | "cancelledAt"
+  | "hiddenAt"
+  | "createdAt"
+  | "updatedAt"
+> & {
+  labels?: IssueLabelRow[];
+  labelIds?: string[];
+};
+type BlockedInboxIssueListRow = BlockedInboxIssueRow & {
+  labels: IssueLabelRow[];
+  labelIds: string[];
+  activeRun: IssueActiveRunRow | null;
+};
+type BlockedInboxEnrichedRow = BlockedInboxIssueListRow & {
+  blockedBy?: IssueRelationIssueSummary[];
+  blockerAttention?: IssueBlockerAttention;
+  blockedInboxAttention: IssueBlockedInboxAttention;
+  productivityReview?: IssueProductivityReview | null;
+  lastActivityAt: Date;
+  myLastTouchAt?: Date | null;
+  lastExternalCommentAt?: Date | null;
+  isUnreadForMe?: boolean;
+};
 type BlockedInboxInteractionRow = {
   id: string;
   issueId: string;
@@ -2965,19 +3060,10 @@ async function listBlockedInboxIssues(
   dbOrTx: any,
   companyId: string,
   filters?: IssueFilters,
-): Promise<Array<IssueWithLabelsAndRun & {
-  blockedBy?: IssueRelationIssueSummary[];
-  blockerAttention?: IssueBlockerAttention;
-  blockedInboxAttention: IssueBlockedInboxAttention;
-  productivityReview?: IssueProductivityReview | null;
-  lastActivityAt: Date;
-  myLastTouchAt?: Date | null;
-  lastExternalCommentAt?: Date | null;
-  isUnreadForMe?: boolean;
-}>> {
+): Promise<BlockedInboxEnrichedRow[]> {
   const { conditions, contextUserId } = await blockedInboxIssueConditions(dbOrTx, companyId, filters);
 
-  const rows = (await dbOrTx
+  const rows = ((await dbOrTx
     .select(issueListSelect)
     .from(issues)
     .where(and(...conditions))
@@ -2985,7 +3071,7 @@ async function listBlockedInboxIssues(
     .map((row: any) => ({
       ...row,
       description: decodeDatabaseTextPreview(row.description, ISSUE_LIST_DESCRIPTION_MAX_CHARS),
-    }));
+    }))) as BlockedInboxIssueRow[];
   const withLabels = await withIssueLabels(dbOrTx, rows);
   const withRuns = withActiveRuns(withLabels, await activeRunMapForIssues(dbOrTx, withLabels));
   if (withRuns.length === 0) return [];
@@ -3031,7 +3117,7 @@ async function listBlockedInboxIssues(
   const readByIssueId = new Map(readRows.map((row) => [row.issueId, row.myLastReadAt]));
   const lastActivityByIssueId = new Map(lastActivityRows.map((row) => [row.issueId, row]));
 
-  const enriched = withRuns.flatMap((row) => {
+  const enriched: BlockedInboxEnrichedRow[] = withRuns.flatMap((row): BlockedInboxEnrichedRow[] => {
     const blockedInboxAttention = blockedInboxAttentionByIssueId.get(row.id);
     if (!blockedInboxAttention) return [];
     if (
@@ -3944,15 +4030,14 @@ export function issueService(db: Db) {
     clearExecutionRunIfTerminal,
     clearCheckoutRunIfTerminal,
 
-    list: async (companyId: string, filters?: IssueFilters) => {
-      if (filters?.attention === "blocked") {
-        return listBlockedInboxIssues(db, companyId, {
-          ...filters,
-          includeBlockedBy: true,
-          includeBlockedInboxAttention: true,
-        });
-      }
+    listBlockedInbox: async (companyId: string, filters?: IssueFilters) => listBlockedInboxIssues(db, companyId, {
+      ...filters,
+      attention: "blocked",
+      includeBlockedBy: true,
+      includeBlockedInboxAttention: true,
+    }),
 
+    list: async (companyId: string, filters?: IssueFilters) => {
       const conditions = [eq(issues.companyId, companyId)];
       const assigneeAgentFilter = parseIssueAssigneeAgentFilter(filters?.assigneeAgentId);
       assertValidAssigneeAgentFilter(assigneeAgentFilter);
@@ -4035,6 +4120,7 @@ export function issueService(db: Db) {
         conditions.push(unreadForUserCondition(companyId, unreadForUserId));
       }
       if (filters?.projectId) conditions.push(eq(issues.projectId, filters.projectId));
+      if (filters?.goalId) conditions.push(eq(issues.goalId, filters.goalId));
       if (filters?.workspaceId) {
         conditions.push(or(
           eq(issues.executionWorkspaceId, filters.workspaceId),
@@ -4207,6 +4293,7 @@ export function issueService(db: Db) {
       }
       if (filters?.assigneeUserId) conditions.push(eq(issues.assigneeUserId, filters.assigneeUserId));
       if (filters?.projectId) conditions.push(eq(issues.projectId, filters.projectId));
+      if (filters?.goalId) conditions.push(eq(issues.goalId, filters.goalId));
       if (filters?.workspaceId) {
         conditions.push(or(
           eq(issues.executionWorkspaceId, filters.workspaceId),
@@ -5053,6 +5140,13 @@ export function issueService(db: Db) {
           issueNumber,
           identifier,
         } as typeof issues.$inferInsert;
+        if (isPlanningIssueForGoal({ workMode: values.workMode, goalId: values.goalId })) {
+          await assertNoDuplicateActivePlanningIssueForGoal(tx, {
+            companyId,
+            goalId: values.goalId ?? "",
+            parentId: values.parentId ?? null,
+          });
+        }
         if (values.status === "in_progress" && !values.startedAt) {
           values.startedAt = new Date();
         }

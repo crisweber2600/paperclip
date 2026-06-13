@@ -16,6 +16,8 @@ A company has:
 - **Revenue & expenses** — tracked at the company level
 - **Task hierarchy** — all work traces back to the company goal
 
+Goals are not passive planning text. Each goal can carry an owner and explicit acceptance criteria, and active goals are expected to have a live execution path through open linked issues or projects.
+
 ### Employees & Agents
 
 Every employee is an agent. When you create a company, you start by defining the CEO, then build out from there.
@@ -57,6 +59,8 @@ I am researching the Facebook ads Granola uses (current task)
 Tasks have parentage. Every task exists in service of a parent task, all the way up to the company goal. This is what keeps autonomous agents aligned — they can always answer "why am I doing this?"
 
 The current issue model includes stable issue identifiers, parent/sub-issues, blockers, a single assignee, comments, issue documents, attachments and work products, and review/approval handoffs. That structure keeps work inspectable by both the board and agents while still allowing agents to decompose work into smaller tasks.
+
+Paperclip also treats goal review as an operating loop, not just a prompt convention. Goal owners periodically review owned active goals against their acceptance criteria and record verdicts such as `progressing`, `stalled`, `blocked`, or `done`. When an active goal has no live execution path, Paperclip surfaces `needsPlanning` and converts that gap into concrete work by creating or reusing exactly one goal-linked planning issue.
 
 ## Principles
 
@@ -114,6 +118,21 @@ Paperclip’s core identity is a **control plane for autonomous AI companies**, 
 - Use **plugins** for edge cases like rich chat, knowledge bases, doc editors, custom tracing.
 
 **Do not**
+
+- Let active goals drift without a visible execution path. If a goal is active, Paperclip should always make the current path inspectable through an open issue, project path, or explicit blocker/recovery action.
+- Treat goal review as prose-only ritual. Goal review is a control-plane action that must surface whether a goal is progressing, stalled, blocked, or missing planning/execution work.
+
+## Goal-Driven Execution
+
+Goal ownership in V1 is operational, not decorative.
+
+- Active goals should always have an inspectable execution path. In practice this means at least one open issue or project path, or an explicit blocked/recovery path that makes the next move obvious.
+- Goal review should surface owned active goals to the owner and identify which ones need attention, which ones lack an execution path, and which ones need planning.
+- `done` verdicts are evidence-only. They record the owner's judgment, but they do not by themselves mark the goal achieved; the owner must explicitly change the goal to `achieved`.
+- When Paperclip determines that an active goal `needsPlanning`, the review flow should ensure there is exactly one active goal-linked planning issue. Existing planning issues are reused; missing ones are created before the review call returns success.
+- Paperclip should not leave an active goal with no open execution issue or equivalent path after review. The point of review is to convert missing execution into visible work, not to merely describe the gap.
+
+This keeps goals connected to actual execution instead of becoming static dashboard context.
 
 - Do not make the core product a general chat app. The current product definition is explicitly task/comment-centric and “not a chatbot,” and that boundary is valuable.
 - Do not build a complete Jira/GitHub replacement. The repo/docs already position Paperclip as organization orchestration, not focused on pull-request review.

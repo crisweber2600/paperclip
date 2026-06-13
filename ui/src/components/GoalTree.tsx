@@ -1,4 +1,4 @@
-import type { Goal } from "@paperclipai/shared";
+import type { GoalOperatorView } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { StatusBadge } from "./StatusBadge";
 import { ChevronRight } from "lucide-react";
@@ -6,18 +6,18 @@ import { cn } from "../lib/utils";
 import { useState } from "react";
 
 interface GoalTreeProps {
-  goals: Goal[];
-  goalLink?: (goal: Goal) => string;
-  onSelect?: (goal: Goal) => void;
+  goals: GoalOperatorView[];
+  goalLink?: (goal: GoalOperatorView) => string;
+  onSelect?: (goal: GoalOperatorView) => void;
 }
 
 interface GoalNodeProps {
-  goal: Goal;
-  children: Goal[];
-  allGoals: Goal[];
+  goal: GoalOperatorView;
+  children: GoalOperatorView[];
+  allGoals: GoalOperatorView[];
   depth: number;
-  goalLink?: (goal: Goal) => string;
-  onSelect?: (goal: Goal) => void;
+  goalLink?: (goal: GoalOperatorView) => string;
+  onSelect?: (goal: GoalOperatorView) => void;
 }
 
 function GoalNode({ goal, children, allGoals, depth, goalLink, onSelect }: GoalNodeProps) {
@@ -45,6 +45,11 @@ function GoalNode({ goal, children, allGoals, depth, goalLink, onSelect }: GoalN
       )}
       <span className="text-xs text-muted-foreground capitalize">{goal.level}</span>
       <span className="flex-1 truncate">{goal.title}</span>
+      {goal.needsPlanning && (
+        <span className="text-[10px] uppercase tracking-wide text-amber-600 dark:text-amber-400">
+          No path
+        </span>
+      )}
       <StatusBadge status={goal.status} />
     </>
   );

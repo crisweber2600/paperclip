@@ -43,6 +43,43 @@ This starts:
 
 `pnpm dev` and `pnpm dev:once` are now idempotent for the current repo and instance: if the matching Paperclip dev runner is already alive, Paperclip reports the existing process instead of starting a duplicate.
 
+## Company package bootstrap flow
+
+When an operator has prepared docs in a repo or folder and wants to turn them into a company, the supported V1 path is the portability engine behind `paperclipai company import`.
+
+Use a markdown-first package rooted at `COMPANY.md`, optionally with a `.paperclip.yaml` sidecar for Paperclip-only fidelity. Common conventions include:
+
+- `agents/<slug>/AGENTS.md`
+- `projects/<slug>/PROJECT.md`
+- `projects/<slug>/tasks/<slug>/TASK.md`
+- `tasks/<slug>/TASK.md`
+- `skills/<slug>/SKILL.md`
+
+Supported operator inputs are:
+
+- a local folder containing the package
+- a local `.zip` package
+- a GitHub repo or subfolder, either as a full URL or `owner/repo[/path]` shorthand
+
+Recommended workflow:
+
+```sh
+# Preview first
+paperclipai company import ./prepared-company --dry-run
+
+# Import into a fresh company
+paperclipai company import ./prepared-company --target new --yes
+
+# Preview a GitHub-hosted package into an existing company
+paperclipai company import paperclipai/companies/demo \
+  --ref main \
+  --target existing \
+  -C <company-id> \
+  --dry-run
+```
+
+Use `--ref` for reproducible GitHub imports and `--dry-run` to inspect collisions before applying. The preview/apply behavior is grounded in the current portability contract rather than a separate bootstrap subsystem.
+
 Issue execution may also use project execution workspace policies and workspace runtime services for per-project worktrees, preview servers, and managed dev commands. Configure those through the project workspace/runtime surfaces rather than starting long-running unmanaged processes when a task needs a reusable service.
 
 ## Storybook
@@ -123,6 +160,22 @@ pnpm test:release-smoke
 These browser suites are intended for targeted local verification and CI, not the default agent/human test command.
 
 For normal issue work, start with the smallest targeted check that proves the change. Reserve repo-wide typecheck/build/test runs for PR-ready handoff or changes broad enough that narrow checks do not cover the risk.
+
+## Goal Review Surfaces
+
+Owned-goal review is exposed through the agent API:
+
+- `GET /api/agents/me/goal-review` returns the owned active goals the current agent must judge, including acceptance criteria, ancestry, execution-path counts, and `needsPlanning` when an active goal has no live path.
+- `POST /api/agents/me/goal-review/verdicts` records one or more owner verdicts (`progressing`, `stalled`, `blocked`, `done`) with required reasons.
+
+Goal operator pages and list endpoints now return the enriched operator view rather than the bare storage shape. In addition to the persisted goal fields, the operator view includes:
+
+- `executionPath.openIssueCount`
+- `executionPath.openProjectCount`
+- `executionPath.hasExecutionPath`
+- `needsPlanning`
+
+When goal review records a non-`done` verdict for an active goal with `needsPlanning: true`, the server creates or reuses exactly one goal-linked planning issue before returning success.
 
 ## One-Command Local Run
 

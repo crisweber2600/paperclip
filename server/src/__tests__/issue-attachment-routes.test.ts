@@ -18,6 +18,24 @@ const mockWorkProductService = vi.hoisted(() => ({
   createForIssue: vi.fn(),
   getById: vi.fn(),
   update: vi.fn(),
+  listForIssue: vi.fn(),
+}));
+
+const mockAgentService = vi.hoisted(() => ({
+  list: vi.fn(),
+  getById: vi.fn(),
+}));
+
+const mockProjectService = vi.hoisted(() => ({
+  list: vi.fn(),
+}));
+
+const mockGoalService = vi.hoisted(() => ({
+  list: vi.fn(),
+}));
+
+const mockDocumentService = vi.hoisted(() => ({
+  listIssueDocuments: vi.fn(),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
@@ -45,18 +63,16 @@ function registerRouteMocks() {
       canUser: vi.fn(),
       hasPermission: vi.fn(),
     }),
-    agentService: () => ({
-      getById: vi.fn(),
-    }),
+    agentService: () => mockAgentService,
     companyService: () => mockCompanyService,
     documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
-    documentService: () => ({}),
+    documentService: () => mockDocumentService,
     executionWorkspaceService: () => ({}),
     feedbackService: () => ({
       listIssueVotesForUser: vi.fn(async () => []),
       saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
     }),
-    goalService: () => ({}),
+    goalService: () => mockGoalService,
     heartbeatService: () => ({
       wakeup: vi.fn(async () => undefined),
       reportRunActivity: vi.fn(async () => undefined),
@@ -99,7 +115,7 @@ function registerRouteMocks() {
     }),
     issueService: () => mockIssueService,
     logActivity: mockLogActivity,
-    projectService: () => ({}),
+    projectService: () => mockProjectService,
     routineService: () => ({
       syncRunStatusForIssue: vi.fn(async () => undefined),
     }),
@@ -240,6 +256,11 @@ describe("issue attachment routes", () => {
     mockWorkProductService.createForIssue.mockReset();
     mockWorkProductService.getById.mockReset();
     mockWorkProductService.update.mockReset();
+    mockWorkProductService.listForIssue.mockReset();
+    mockAgentService.list.mockReset();
+    mockProjectService.list.mockReset();
+    mockGoalService.list.mockReset();
+    mockDocumentService.listIssueDocuments.mockReset();
   });
 
   it("accepts zip uploads for issue attachments", async () => {
@@ -632,5 +653,114 @@ describe("issue attachment routes", () => {
         },
       }),
     );
+  });
+
+  it("generates a docs-to-routines proposal artifact from governing corpus", async () => {
+    const storage = createStorageService();
+    const issue = {
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      identifier: "PAPAA-48",
+      projectId: "project-1",
+      goalId: null,
+      priority: "medium",
+      governingArtifacts: [
+        { kind: "document_revision", artifactId: "revision-1", revisionId: "revision-1" },
+        { kind: "work_product", artifactId: "work-product-source-1", workProductId: "work-product-source-1" },
+      ],
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.listAttachments = vi.fn(async () => [
+      { ...makeAttachment("text/markdown", "source.md"), id: "attachment-source-1" },
+    ]);
+    mockIssueService.createAttachment.mockResolvedValue({
+      ...makeAttachment("text/markdown", "proposal.md"),
+      id: "attachment-proposal-1",
+    });
+    mockDocumentService.listIssueDocuments.mockResolvedValue([
+      {
+        id: "document-1",
+        companyId: "company-1",
+        issueId: issue.id,
+        key: "plan",
+        title: "Plan",
+        format: "markdown",
+        body: "Weekly review for [@CTO](agent://agent-1) in [Paperclip](project://project-1)",
+        latestRevisionId: "revision-1",
+        latestRevisionNumber: 1,
+        createdByAgentId: null,
+        createdByUserId: "local-board",
+        updatedByAgentId: null,
+        updatedByUserId: "local-board",
+        lockedAt: null,
+        lockedByAgentId: null,
+        lockedByUserId: null,
+        sourceTrust: null,
+        createdAt: new Date("2026-01-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+      },
+    ]);
+    mockWorkProductService.listForIssue.mockResolvedValue([
+      {
+        id: "work-product-source-1",
+        companyId: "company-1",
+        issueId: issue.id,
+        executionWorkspaceId: null,
+        runtimeServiceId: null,
+        type: "artifact",
+        provider: "paperclip",
+        externalId: null,
+        title: "Operating model",
+        url: null,
+        status: "complete",
+        reviewState: "pending",
+        isPrimary: false,
+        healthStatus: "healthy",
+        summary: "Use weekly routines.",
+        metadata: { attachmentId: "attachment-source-1" },
+        sourceTrust: null,
+        createdByRunId: null,
+        createdAt: new Date("2026-01-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+      },
+    ]);
+    mockAgentService.list.mockResolvedValue([
+      { id: "agent-1", companyId: "company-1", name: "CTO", title: "Chief Technology Officer", role: "cto", reportsTo: null, status: "active" },
+    ]);
+    mockProjectService.list.mockResolvedValue([
+      { id: "project-1", companyId: "company-1", name: "Paperclip", status: "active" },
+    ]);
+    mockGoalService.list.mockResolvedValue([]);
+    mockWorkProductService.createForIssue.mockResolvedValue({
+      id: "artifact-product-1",
+      issueId: issue.id,
+      companyId: issue.companyId,
+      type: "artifact",
+      provider: "paperclip",
+      title: "Docs-to-routines routine proposal",
+    });
+
+    const app = await createApp(storage);
+    const res = await request(app)
+      .post(`/api/issues/${issue.id}/docs-to-routines/proposal`)
+      .send({ corpus: { operatorPrompt: "Prefer weekly cadences." } });
+
+    expect(res.status).toBe(201);
+    expect(mockWorkProductService.createForIssue).toHaveBeenCalledWith(
+      issue.id,
+      issue.companyId,
+      expect.objectContaining({
+        type: "artifact",
+        provider: "paperclip",
+        title: "Docs-to-routines routine proposal",
+      }),
+    );
+    expect(String(storage.__calls.putFile?.body)).toContain('"sourceCorpus"');
+    expect(res.body.proposal.proposals[0]).toMatchObject({
+      assigneeAgentId: "agent-1",
+      projectId: "project-1",
+      concurrencyPolicy: "coalesce_if_active",
+      catchUpPolicy: "skip_missed",
+    });
   });
 });

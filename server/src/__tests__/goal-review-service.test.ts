@@ -242,14 +242,14 @@ describe("isAttentionGoal", () => {
 describe("goalReviewService.buildGoalReviewWakeSummary", () => {
   it("lists attention goals and excludes those at the streak cap", async () => {
     const ownedGoals = [
-      goalRow({ id: "goal-stalled", title: "Stalled goal", lastVerdict: "stalled", verdictStreak: 2 }),
+      goalRow({ id: "11111111-1111-4111-8111-111111111111", title: "Stalled goal", lastVerdict: "stalled", verdictStreak: 2 }),
       goalRow({
-        id: "goal-exhausted",
+        id: "22222222-2222-4222-8222-222222222222",
         title: "Exhausted goal",
         lastVerdict: "stalled",
         verdictStreak: DEFAULT_GOAL_REVIEW_MAX_VERDICT_STREAK,
       }),
-      goalRow({ id: "goal-progressing", title: "Progressing goal", lastVerdict: "progressing", verdictStreak: 1 }),
+      goalRow({ id: "33333333-3333-4333-8333-333333333333", title: "Progressing goal", lastVerdict: "progressing", verdictStreak: 1 }),
     ];
     const db = fakeDb([
       ownedGoals, // listActiveOwnedByAgent
@@ -266,7 +266,7 @@ describe("goalReviewService.buildGoalReviewWakeSummary", () => {
     expect(summary).not.toBeNull();
     expect(summary?.attentionGoalCount).toBe(1);
     expect(summary?.attentionGoals).toEqual([
-      { id: "goal-stalled", title: "Stalled goal", lastVerdict: "stalled", verdictStreak: 2 },
+      { id: "11111111-1111-4111-8111-111111111111", title: "Stalled goal", lastVerdict: "stalled", verdictStreak: 2 },
     ]);
     expect(summary?.goalsWithoutExecutionPathCount).toBe(3);
   });

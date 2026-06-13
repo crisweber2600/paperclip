@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { goalsApi } from "../api/goals";
+import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { assetsApi } from "../api/assets";
 import { budgetsApi } from "../api/budgets";
@@ -17,12 +18,13 @@ import { StatusBadge } from "../components/StatusBadge";
 import { InlineEditor } from "../components/InlineEditor";
 import { EntityRow } from "../components/EntityRow";
 import { PageSkeleton } from "../components/PageSkeleton";
-import { cn, projectUrl } from "../lib/utils";
+import { cn, formatDateTime, issueUrl, projectUrl } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Plus, SlidersHorizontal, X } from "lucide-react";
-import type { BudgetPolicySummary, Goal, Project } from "@paperclipai/shared";
+import type { BudgetPolicySummary, GoalOperatorView, Issue, IssueDocument, IssueWorkProduct, Project } from "@paperclipai/shared";
 
 function AcceptanceCriteriaSection({
   criteria,
@@ -143,6 +145,28 @@ export function GoalDetail() {
     enabled: !!resolvedCompanyId
   });
 
+  const { data: linkedIssues } = useQuery({
+    queryKey: [...queryKeys.issues.list(resolvedCompanyId ?? "__none__"), "goal", goalId ?? "__none__"],
+    queryFn: () => issuesApi.list(resolvedCompanyId!, { goalId: goalId!, includeBlockedBy: true }),
+    enabled: !!resolvedCompanyId && !!goalId,
+  });
+
+  const linkedIssueList = linkedIssues ?? [];
+  const governingIssue = linkedIssueList.find((issue) => issue.planDocument || (issue.documentSummaries?.length ?? 0) > 0) ?? null;
+  const primaryEvidenceIssue = linkedIssueList.find((issue) => (issue.workProducts?.length ?? 0) > 0) ?? null;
+
+  const { data: governingDocuments } = useQuery({
+    queryKey: queryKeys.issues.documents(governingIssue?.id ?? "__none__"),
+    queryFn: () => issuesApi.listDocuments(governingIssue!.id, { includeSystem: true }),
+    enabled: !!governingIssue?.id,
+  });
+
+  const { data: evidenceWorkProducts } = useQuery({
+    queryKey: queryKeys.issues.workProducts(primaryEvidenceIssue?.id ?? "__none__"),
+    queryFn: () => issuesApi.listWorkProducts(primaryEvidenceIssue!.id),
+    enabled: !!primaryEvidenceIssue?.id,
+  });
+
   useEffect(() => {
     if (!goal?.companyId || goal.companyId === selectedCompanyId) return;
     setSelectedCompanyId(goal.companyId, { source: "route_sync" });
@@ -253,6 +277,20 @@ export function GoalDetail() {
   if (error) return <p className="text-sm text-destructive">{error.message}</p>;
   if (!goal) return null;
 
+  const acceptedCriteria = goal.acceptanceCriteria ?? [];
+  const openLinkedIssues = linkedIssueList.filter((issue) => !["done", "cancelled"].includes(issue.status));
+  const evidenceProducts = (evidenceWorkProducts ?? []).filter((product) =>
+    product.type === "artifact" || product.type === "document" || Boolean(product.url),
+  );
+  const docList = governingDocuments ?? [];
+  const completedCriteriaCount = acceptedCriteria.filter((criterion) => {
+    const normalizedCriterion = criterion.toLowerCase();
+    return linkedIssueList.some((issue) => {
+      const haystacks = [issue.title, issue.description ?? "", ...(issue.workProducts ?? []).map((product) => `${product.title} ${product.summary ?? ""}`)];
+      return haystacks.some((entry) => entry.toLowerCase().includes(normalizedCriterion));
+    });
+  }).length;
+
   return (
     <div className="space-y-6">
       <div className="space-y-3">
@@ -294,6 +332,124 @@ export function GoalDetail() {
         criteria={goal.acceptanceCriteria ?? []}
         onChange={(acceptanceCriteria) => updateGoal.mutate({ acceptanceCriteria })}
       />
+
+      <div className="grid gap-4 lg:grid-cols-3">
+        <div className="rounded-lg border border-border p-4 space-y-1">
+          <p className="text-xs uppercase text-muted-foreground">Goal Health</p>
+          <p className="text-2xl font-semibold">{goal.lastVerdict ?? (goal.needsPlanning ? "needs planning" : "unreviewed")}</p>
+          <p className="text-sm text-muted-foreground">
+            {goal.lastVerdictReason ?? (goal.executionPath.hasExecutionPath
+              ? `${openLinkedIssues.length} active linked issue${openLinkedIssues.length === 1 ? "" : "s"}`
+              : "No active execution path yet")}
+          </p>
+          {goal.lastVerdictAt ? (
+            <p className="text-xs text-muted-foreground">Updated {formatDateTime(goal.lastVerdictAt)}</p>
+          ) : null}
+        </div>
+
+        <div className="rounded-lg border border-border p-4 space-y-1">
+          <p className="text-xs uppercase text-muted-foreground">Governing Artifacts</p>
+          <p className="text-2xl font-semibold">{docList.length}</p>
+          <p className="text-sm text-muted-foreground">
+            {governingIssue
+              ? `From ${governingIssue.identifier ?? governingIssue.id}`
+              : "No linked plan or governing document yet"}
+          </p>
+        </div>
+
+        <div className="rounded-lg border border-border p-4 space-y-1">
+          <p className="text-xs uppercase text-muted-foreground">Acceptance Evidence</p>
+          <p className="text-2xl font-semibold">{acceptedCriteria.length === 0 ? "—" : `${completedCriteriaCount}/${acceptedCriteria.length}`}</p>
+          <p className="text-sm text-muted-foreground">
+            {evidenceProducts.length > 0
+              ? `${evidenceProducts.length} deliverable work product${evidenceProducts.length === 1 ? "" : "s"}`
+              : "No evidence-linked deliverables yet"}
+          </p>
+        </div>
+      </div>
+
+      <div className="grid gap-6 xl:grid-cols-[1.2fr_1fr]">
+        <section className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-medium">Linked Issues</h3>
+            <span className="text-xs text-muted-foreground">{linkedIssueList.length}</span>
+          </div>
+          {linkedIssueList.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No issues linked directly to this goal.</p>
+          ) : (
+            <div className="border border-border rounded-md overflow-hidden">
+              {linkedIssueList.map((issue, index) => (
+                <div key={issue.id}>
+                  <EntityRow
+                    title={issue.title}
+                    subtitle={issue.description ?? undefined}
+                    to={issueUrl(issue)}
+                    trailing={<StatusBadge status={issue.status} />}
+                  />
+                  {index < linkedIssueList.length - 1 ? <Separator /> : null}
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <div className="space-y-6">
+          <section className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-medium">Governing Artifacts</h3>
+              {governingIssue ? (
+                <a href={issueUrl(governingIssue)} className="text-xs text-muted-foreground hover:underline">
+                  {governingIssue.identifier ?? governingIssue.id}
+                </a>
+              ) : null}
+            </div>
+            {docList.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No linked plan, spec, or acceptance documents yet.</p>
+            ) : (
+              <div className="border border-border rounded-md overflow-hidden">
+                {docList.map((document: IssueDocument, index: number) => (
+                  <div key={document.id}>
+                    <EntityRow
+                      title={document.title ?? document.key}
+                      subtitle={`Updated ${formatDateTime(document.updatedAt)} · rev ${document.latestRevisionNumber}`}
+                      to={`${issueUrl({ id: document.issueId, identifier: governingIssue?.identifier ?? document.issueId })}#document-${encodeURIComponent(document.key)}`}
+                    />
+                    {index < docList.length - 1 ? <Separator /> : null}
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
+          <section className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-medium">Acceptance Evidence</h3>
+              {primaryEvidenceIssue ? (
+                <a href={issueUrl(primaryEvidenceIssue)} className="text-xs text-muted-foreground hover:underline">
+                  {primaryEvidenceIssue.identifier ?? primaryEvidenceIssue.id}
+                </a>
+              ) : null}
+            </div>
+            {evidenceProducts.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No deliverables or evidence work products are linked yet.</p>
+            ) : (
+              <div className="border border-border rounded-md overflow-hidden">
+                {evidenceProducts.map((product: IssueWorkProduct, index: number) => (
+                  <div key={product.id}>
+                    <EntityRow
+                      title={product.title}
+                      subtitle={product.summary ?? `${product.type} · ${product.status}`}
+                      to={product.url ?? `${issueUrl(primaryEvidenceIssue ?? { id: product.issueId })}#work-product-${product.id}`}
+                      trailing={<StatusBadge status={product.status} />}
+                    />
+                    {index < evidenceProducts.length - 1 ? <Separator /> : null}
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
+      </div>
 
       <Tabs defaultValue="children">
         <TabsList>

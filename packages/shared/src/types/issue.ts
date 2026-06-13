@@ -30,6 +30,7 @@ import type { Goal } from "./goal.js";
 import type { Project, ProjectWorkspace } from "./project.js";
 import type { ExecutionWorkspace, IssueExecutionWorkspaceSettings } from "./workspace-runtime.js";
 import type { IssueWorkProduct } from "./work-product.js";
+import type { AcceptanceEvidenceEntry, GoverningArtifactReference } from "../validators/governing-artifact.js";
 import type {
   LowTrustReviewPresetPolicy,
   SourceTrustMetadata,
@@ -541,6 +542,8 @@ export interface Issue {
   executionWorkspaceId: string | null;
   executionWorkspacePreference: string | null;
   executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
+  governingArtifacts?: GoverningArtifactReference[] | null;
+  acceptanceEvidence?: AcceptanceEvidenceEntry[] | null;
   startedAt: Date | null;
   completedAt: Date | null;
   cancelledAt: Date | null;
@@ -759,6 +762,14 @@ export interface RequestConfirmationIssueDocumentTarget {
   href?: string | null;
 }
 
+export interface RequestConfirmationIssueWorkProductTarget {
+  type: "issue_work_product";
+  issueId?: string | null;
+  workProductId: string;
+  label?: string | null;
+  href?: string | null;
+}
+
 export interface RequestConfirmationCustomTarget {
   type: "custom";
   key: string;
@@ -770,7 +781,64 @@ export interface RequestConfirmationCustomTarget {
 
 export type RequestConfirmationTarget =
   | RequestConfirmationIssueDocumentTarget
+  | RequestConfirmationIssueWorkProductTarget
   | RequestConfirmationCustomTarget;
+
+export interface RoutineProposalCorpusDocumentRef {
+  kind: "issue_document";
+  issueId?: string | null;
+  documentId?: string | null;
+  key: string;
+  title?: string | null;
+  revisionId?: string | null;
+  revisionNumber?: number | null;
+}
+
+export interface RoutineProposalCorpusWorkProductRef {
+  kind: "issue_work_product";
+  issueId?: string | null;
+  workProductId: string;
+  title?: string | null;
+  url?: string | null;
+}
+
+export interface RoutineProposalCorpusAttachmentRef {
+  kind: "attachment";
+  attachmentId: string;
+  title?: string | null;
+  contentType?: string | null;
+  byteSize?: number | null;
+}
+
+export type RoutineProposalCorpusReference =
+  | RoutineProposalCorpusDocumentRef
+  | RoutineProposalCorpusWorkProductRef
+  | RoutineProposalCorpusAttachmentRef;
+
+export interface RoutineProposalCorpusDocument {
+  version: 1;
+  operatorPrompt?: string | null;
+  references: RoutineProposalCorpusReference[];
+}
+
+export interface RoutineProposalReviewRequestInput {
+  proposalDocumentKey: string;
+  proposalLabel?: string | null;
+  proposalRevisionId?: string | null;
+  proposalRevisionNumber?: number | null;
+  proposalWorkProductId?: string | null;
+  prompt: string;
+  detailsMarkdown?: string | null;
+  acceptLabel?: string | null;
+  rejectLabel?: string | null;
+  rejectRequiresReason?: boolean;
+  rejectReasonLabel?: string | null;
+  allowDeclineReason?: boolean;
+  declineReasonPlaceholder?: string | null;
+  supersedeOnUserComment?: boolean;
+  idempotencyKey?: string | null;
+  continuationPolicy?: IssueThreadInteractionContinuationPolicy;
+}
 
 export interface RequestConfirmationPayload {
   version: 1;

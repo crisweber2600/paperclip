@@ -1,7 +1,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { useQueryClient } from "@tanstack/react-query";
-import type { Goal, Project } from "@paperclipai/shared";
+import type { GoalOperatorView, Project } from "@paperclipai/shared";
 import { Archive, Boxes, FolderGit2, GitBranch, Network, Play, RotateCcw, Square } from "lucide-react";
 import { GoalProperties } from "@/components/GoalProperties";
 import { GoalTree } from "@/components/GoalTree";
@@ -223,7 +223,7 @@ function WorkspacesMatrix() {
   );
 }
 
-function GoalProgressRow({ goal }: { goal: Goal }) {
+function GoalProgressRow({ goal }: { goal: GoalOperatorView }) {
   const progress = goalProgress.get(goal.id) ?? 0;
   const childCount = storybookGoals.filter((candidate) => candidate.parentId === goal.id).length;
 
@@ -288,7 +288,7 @@ function GoalPropertiesMatrix() {
 }
 
 function GoalTreeMatrix() {
-  const [selectedGoal, setSelectedGoal] = useState<Goal | null>(storybookGoals[1] ?? null);
+  const [selectedGoal, setSelectedGoal] = useState<GoalOperatorView | null>(storybookGoals[1] ?? null);
 
   return (
     <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">

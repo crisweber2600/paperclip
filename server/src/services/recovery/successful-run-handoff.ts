@@ -405,6 +405,11 @@ export function decideSuccessfulRunHandoff(input: {
     ...(input.taskKey ? { taskKey: input.taskKey } : {}),
     instruction,
   }, "status_only");
+  const priorContext =
+    run.contextSnapshot && typeof run.contextSnapshot === "object"
+      ? run.contextSnapshot as Record<string, unknown>
+      : null;
+  const carriedGoalReview = priorContext?.paperclipGoalReview;
 
   return {
     kind: "enqueue",
@@ -417,6 +422,7 @@ export function decideSuccessfulRunHandoff(input: {
     contextSnapshot: withRecoveryModelProfileHint({
       ...payload,
       wakeReason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
+      ...(carriedGoalReview ? { paperclipGoalReview: carriedGoalReview } : {}),
       livenessState: input.livenessState,
     }, "status_only"),
   };

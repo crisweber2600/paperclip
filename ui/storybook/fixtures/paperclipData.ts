@@ -10,7 +10,7 @@ import type {
   CompanySecretProviderConfig,
   DashboardSummary,
   ExecutionWorkspace,
-  Goal,
+  GoalOperatorView,
   Issue,
   IssueDocument,
   IssueLabel,
@@ -233,7 +233,7 @@ function labelsFor(ids: string[]) {
   return ids.map((id) => storybookIssueLabelMap.get(id)).filter((label): label is IssueLabel => Boolean(label));
 }
 
-export const storybookGoals: Goal[] = [
+export const storybookGoals: GoalOperatorView[] = [
   {
     id: "goal-company",
     companyId: "company-storybook",
@@ -251,8 +251,10 @@ export const storybookGoals: Goal[] = [
     verdictStreak: 0,
     pauseReason: null,
     pausedAt: null,
-    createdAt: recent(30_000),
-    updatedAt: recent(8),
+    createdAt: recent(30_000).toISOString(),
+    updatedAt: recent(8).toISOString(),
+    executionPath: { openIssueCount: 2, openProjectCount: 1, hasExecutionPath: true },
+    needsPlanning: false,
   },
   {
     id: "goal-board-ux",
@@ -271,8 +273,10 @@ export const storybookGoals: Goal[] = [
     verdictStreak: 0,
     pauseReason: null,
     pausedAt: null,
-    createdAt: recent(19_000),
-    updatedAt: recent(18),
+    createdAt: recent(19_000).toISOString(),
+    updatedAt: recent(18).toISOString(),
+    executionPath: { openIssueCount: 1, openProjectCount: 1, hasExecutionPath: true },
+    needsPlanning: false,
   },
   {
     id: "goal-agent-runtime",
@@ -291,8 +295,10 @@ export const storybookGoals: Goal[] = [
     verdictStreak: 0,
     pauseReason: null,
     pausedAt: null,
-    createdAt: recent(17_500),
-    updatedAt: recent(60),
+    createdAt: recent(17_500).toISOString(),
+    updatedAt: recent(60).toISOString(),
+    executionPath: { openIssueCount: 0, openProjectCount: 0, hasExecutionPath: false },
+    needsPlanning: false,
   },
   {
     id: "goal-storybook",
@@ -311,8 +317,10 @@ export const storybookGoals: Goal[] = [
     verdictStreak: 0,
     pauseReason: null,
     pausedAt: null,
-    createdAt: recent(9_000),
-    updatedAt: recent(3),
+    createdAt: recent(9_000).toISOString(),
+    updatedAt: recent(3).toISOString(),
+    executionPath: { openIssueCount: 1, openProjectCount: 0, hasExecutionPath: true },
+    needsPlanning: false,
   },
   {
     id: "goal-budget-safety",
@@ -331,8 +339,10 @@ export const storybookGoals: Goal[] = [
     verdictStreak: 0,
     pauseReason: null,
     pausedAt: null,
-    createdAt: recent(12_000),
-    updatedAt: recent(120),
+    createdAt: recent(12_000).toISOString(),
+    updatedAt: recent(120).toISOString(),
+    executionPath: { openIssueCount: 0, openProjectCount: 1, hasExecutionPath: true },
+    needsPlanning: false,
   },
   {
     id: "goal-archived-import",
@@ -351,8 +361,10 @@ export const storybookGoals: Goal[] = [
     verdictStreak: 0,
     pauseReason: null,
     pausedAt: null,
-    createdAt: recent(24_000),
-    updatedAt: recent(2_500),
+    createdAt: recent(24_000).toISOString(),
+    updatedAt: recent(2_500).toISOString(),
+    executionPath: { openIssueCount: 0, openProjectCount: 0, hasExecutionPath: false },
+    needsPlanning: false,
   },
 ];
 

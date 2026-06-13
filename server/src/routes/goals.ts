@@ -14,13 +14,13 @@ export function goalRoutes(db: Db) {
   router.get("/companies/:companyId/goals", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const result = await svc.list(companyId);
+    const result = await svc.listOperatorView(companyId);
     res.json(result);
   });
 
   router.get("/goals/:id", async (req, res) => {
     const id = req.params.id as string;
-    const goal = await svc.getById(id);
+    const goal = await svc.getOperatorById(id);
     if (!goal) {
       res.status(404).json({ error: "Goal not found" });
       return;
@@ -48,12 +48,13 @@ export function goalRoutes(db: Db) {
     if (telemetryClient) {
       trackGoalCreated(telemetryClient, { goalLevel: goal.level });
     }
-    res.status(201).json(goal);
+    const enrichedGoal = await svc.getOperatorById(goal.id);
+    res.status(201).json(enrichedGoal ?? goal);
   });
 
   router.patch("/goals/:id", validate(updateGoalSchema), async (req, res) => {
     const id = req.params.id as string;
-    const existing = await svc.getById(id);
+    const existing = await svc.getOperatorById(id);
     if (!existing) {
       res.status(404).json({ error: "Goal not found" });
       return;
@@ -77,12 +78,13 @@ export function goalRoutes(db: Db) {
       details: req.body,
     });
 
-    res.json(goal);
+    const enrichedGoal = await svc.getOperatorById(goal.id);
+    res.json(enrichedGoal ?? goal);
   });
 
   router.delete("/goals/:id", async (req, res) => {
     const id = req.params.id as string;
-    const existing = await svc.getById(id);
+    const existing = await svc.getOperatorById(id);
     if (!existing) {
       res.status(404).json({ error: "Goal not found" });
       return;

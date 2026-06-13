@@ -1010,6 +1010,8 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             color: declaration.color ?? null,
             icon: null,
             env: null,
+            governingArtifacts: null,
+            acceptanceEvidence: null,
             pauseReason: null,
             pausedAt: null,
             executionWorkspacePolicy: null,

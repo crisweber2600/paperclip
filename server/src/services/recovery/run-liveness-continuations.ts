@@ -168,6 +168,12 @@ export function decideRunLivenessContinuation(input: {
       "The previous run ended without concrete progress. Take the first concrete action now or mark the issue blocked with a specific unblock request.",
   }, "normal_model");
 
+  const priorContext =
+    run.contextSnapshot && typeof run.contextSnapshot === "object"
+      ? run.contextSnapshot as Record<string, unknown>
+      : null;
+  const carriedGoalReview = priorContext?.paperclipGoalReview;
+
   return {
     kind: "enqueue",
     nextAttempt,
@@ -178,6 +184,7 @@ export function decideRunLivenessContinuation(input: {
       taskId: issue.id,
       taskKey: issue.id,
       wakeReason: RUN_LIVENESS_CONTINUATION_REASON,
+      ...(carriedGoalReview ? { paperclipGoalReview: carriedGoalReview } : {}),
       livenessContinuationAttempt: nextAttempt,
       livenessContinuationMaxAttempts: maxAttempts,
       livenessContinuationSourceRunId: run.id,

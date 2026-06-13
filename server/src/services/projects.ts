@@ -60,6 +60,8 @@ interface ProjectWithGoals extends Omit<ProjectRow, "executionWorkspacePolicy"> 
   urlKey: string;
   goalIds: string[];
   goals: ProjectGoalRef[];
+  governingArtifacts: import("@paperclipai/shared").GoverningArtifactReference[] | null;
+  acceptanceEvidence: import("@paperclipai/shared").AcceptanceEvidenceEntry[] | null;
   executionWorkspacePolicy: ProjectExecutionWorkspacePolicy | null;
   codebase: ProjectCodebase;
   workspaces: ProjectWorkspace[];
@@ -112,6 +114,8 @@ async function attachGoals(db: Db, rows: ProjectRow[]): Promise<ProjectWithGoals
       urlKey: deriveProjectUrlKey(r.name, r.id),
       goalIds: g.map((x) => x.id),
       goals: g,
+      governingArtifacts: (r.governingArtifacts as import("@paperclipai/shared").GoverningArtifactReference[] | null) ?? null,
+      acceptanceEvidence: (r.acceptanceEvidence as import("@paperclipai/shared").AcceptanceEvidenceEntry[] | null) ?? null,
       executionWorkspacePolicy: parseProjectExecutionWorkspacePolicy(r.executionWorkspacePolicy),
     } as ProjectWithGoals;
   });

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
-import type { Goal } from "@paperclipai/shared";
+import type { GoalOperatorView } from "@paperclipai/shared";
 import { GOAL_STATUSES, GOAL_LEVELS } from "@paperclipai/shared";
 import { agentsApi } from "../api/agents";
 import { goalsApi } from "../api/goals";
@@ -14,7 +14,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Button } from "@/components/ui/button";
 
 interface GoalPropertiesProps {
-  goal: Goal;
+  goal: GoalOperatorView;
   onUpdate?: (data: Record<string, unknown>) => void;
 }
 
@@ -171,6 +171,30 @@ export function GoalProperties({ goal, onUpdate }: GoalPropertiesProps) {
               {goal.pauseReason === "budget" ? "Budget hard-stop" : label(goal.pauseReason ?? "paused")}
             </span>
             <span className="text-xs text-muted-foreground">{formatDate(goal.pausedAt)}</span>
+          </PropertyRow>
+        )}
+
+        <PropertyRow label="Execution Path">
+          <span
+            className={cn(
+              "text-sm",
+              goal.executionPath.hasExecutionPath ? "text-foreground" : "text-amber-600 dark:text-amber-400",
+            )}
+          >
+            {goal.executionPath.hasExecutionPath ? "Active" : "Missing"}
+          </span>
+          <span className="text-xs text-muted-foreground">
+            {goal.executionPath.openIssueCount} open issue{goal.executionPath.openIssueCount === 1 ? "" : "s"}
+            {", "}
+            {goal.executionPath.openProjectCount} open project{goal.executionPath.openProjectCount === 1 ? "" : "s"}
+          </span>
+        </PropertyRow>
+
+        {goal.needsPlanning && (
+          <PropertyRow label="Planning">
+            <span className="text-sm text-amber-600 dark:text-amber-400">
+              This active goal has no live execution path.
+            </span>
           </PropertyRow>
         )}
       </div>

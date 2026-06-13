@@ -7,9 +7,23 @@ import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
 import { redactCommandText } from "./command-redaction.js";
 import type {
-  AdapterSkillEntry,
-  AdapterSkillSnapshot,
-} from "./types.js";
+  PaperclipWakeBlockerSummary,
+  PaperclipWakeChildIssueSummary,
+  PaperclipWakeComment,
+  PaperclipWakeContinuationSummary,
+  PaperclipWakeExecutionPrincipal,
+  PaperclipWakeExecutionStage,
+  PaperclipWakeGoalReview,
+  PaperclipWakeGoalReviewAttentionGoal,
+  PaperclipWakeGoalReviewGoalRef,
+  PaperclipWakeIssue,
+  PaperclipWakeIssueGoal,
+  PaperclipWakeIssueGoalAncestor,
+  PaperclipWakeLivenessContinuation,
+  PaperclipWakePayload,
+  PaperclipWakeTreeHoldSummary,
+} from "@paperclipai/shared";
+import type { AdapterSkillEntry, AdapterSkillSnapshot } from "./types.js";
 
 export interface RunProcessResult {
   exitCode: number | null;
@@ -115,10 +129,13 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "",
   "Execution contract:",
   "- Start actionable work in this heartbeat; do not stop at a plan unless the issue asks for planning.",
+  "- Work from the issue's goal, spec, and acceptance criteria before inventing your own scope; when any of those are present, treat them as the source of truth for what done means.",
+  "- If the issue is implementation-scoped, do the implementation work in this heartbeat; do not bounce it back into planning unless a real blocker or missing decision prevents execution.",
   "- Leave durable progress in comments, documents, or work products, then update the issue to a clear final disposition before ending the heartbeat.",
   "- Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
   "- Final disposition checklist: mark `done` when complete; use `in_review` only with a real reviewer, approval, interaction, or monitor path; use `blocked` only with first-class blockers or a named unblock owner/action; create delegated follow-up issues with blockers when another agent owns the next step; keep `in_progress` only when a live continuation path exists.",
   "- Prefer the smallest verification that proves the change; do not default to full workspace typecheck/build/test on every heartbeat unless the task scope warrants it.",
+  "- If the issue lacks enough spec or acceptance detail to proceed safely, first look for attached goal context, plan docs, parent issue context, and referenced repo docs before asking for new input.",
   "- Use child issues for parallel or long delegated work instead of polling agents, sessions, or processes.",
   "- If woken by a human comment on a dependency-blocked issue, respond or triage the comment without treating the blocked deliverable work as unblocked.",
   "- Create child issues directly when you know what needs to be done; use issue-thread interactions when the board/user must choose suggested tasks, answer structured questions, or confirm a proposal.",
@@ -345,133 +362,6 @@ export function joinPromptSections(
     .join(separator);
 }
 
-type PaperclipWakeIssue = {
-  id: string | null;
-  identifier: string | null;
-  title: string | null;
-  status: string | null;
-  workMode: string | null;
-  priority: string | null;
-};
-
-type PaperclipWakeExecutionPrincipal = {
-  type: "agent" | "user" | null;
-  agentId: string | null;
-  userId: string | null;
-};
-
-type PaperclipWakeExecutionStage = {
-  wakeRole: "reviewer" | "approver" | "executor" | null;
-  stageId: string | null;
-  stageType: string | null;
-  currentParticipant: PaperclipWakeExecutionPrincipal | null;
-  returnAssignee: PaperclipWakeExecutionPrincipal | null;
-  reviewRequest: {
-    instructions: string;
-  } | null;
-  lastDecisionOutcome: string | null;
-  allowedActions: string[];
-};
-
-type PaperclipWakeComment = {
-  id: string | null;
-  issueId: string | null;
-  body: string;
-  bodyTruncated: boolean;
-  createdAt: string | null;
-  authorType: string | null;
-  authorId: string | null;
-};
-
-type PaperclipWakeContinuationSummary = {
-  key: string | null;
-  title: string | null;
-  body: string;
-  bodyTruncated: boolean;
-  updatedAt: string | null;
-};
-
-type PaperclipWakeLivenessContinuation = {
-  attempt: number | null;
-  maxAttempts: number | null;
-  sourceRunId: string | null;
-  state: string | null;
-  reason: string | null;
-  instruction: string | null;
-};
-
-type PaperclipWakeChildIssueSummary = {
-  id: string | null;
-  identifier: string | null;
-  title: string | null;
-  status: string | null;
-  priority: string | null;
-  summary: string | null;
-};
-
-type PaperclipWakeBlockerSummary = {
-  id: string | null;
-  identifier: string | null;
-  title: string | null;
-  status: string | null;
-  priority: string | null;
-};
-
-type PaperclipWakeTreeHoldSummary = {
-  holdId: string | null;
-  rootIssueId: string | null;
-  mode: string | null;
-  reason: string | null;
-};
-
-type PaperclipWakeGoalReviewGoalRef = {
-  id: string | null;
-  title: string | null;
-};
-
-type PaperclipWakeGoalReviewAttentionGoal = {
-  id: string | null;
-  title: string | null;
-  lastVerdict: string | null;
-  verdictStreak: number;
-};
-
-type PaperclipWakeGoalReview = {
-  due: boolean;
-  ownedActiveGoalCount: number;
-  goalsWithoutExecutionPathCount: number;
-  goalsWithoutExecutionPath: PaperclipWakeGoalReviewGoalRef[];
-  attentionGoalCount: number;
-  attentionGoals: PaperclipWakeGoalReviewAttentionGoal[];
-};
-
-type PaperclipWakePayload = {
-  reason: string | null;
-  issue: PaperclipWakeIssue | null;
-  checkedOutByHarness: boolean;
-  dependencyBlockedInteraction: boolean;
-  treeHoldInteraction: boolean;
-  activeTreeHold: PaperclipWakeTreeHoldSummary | null;
-  unresolvedBlockerIssueIds: string[];
-  unresolvedBlockerSummaries: PaperclipWakeBlockerSummary[];
-  executionStage: PaperclipWakeExecutionStage | null;
-  goalReview: PaperclipWakeGoalReview | null;
-  continuationSummary: PaperclipWakeContinuationSummary | null;
-  livenessContinuation: PaperclipWakeLivenessContinuation | null;
-  interactionKind: string | null;
-  interactionStatus: string | null;
-  childIssueSummaries: PaperclipWakeChildIssueSummary[];
-  childIssueSummaryTruncated: boolean;
-  commentIds: string[];
-  latestCommentId: string | null;
-  comments: PaperclipWakeComment[];
-  requestedCount: number;
-  includedCount: number;
-  missingCount: number;
-  truncated: boolean;
-  fallbackFetchNeeded: boolean;
-};
-
 function normalizePaperclipWakeIssue(value: unknown): PaperclipWakeIssue | null {
   const issue = parseObject(value);
   const id = asString(issue.id, "").trim() || null;
@@ -480,6 +370,39 @@ function normalizePaperclipWakeIssue(value: unknown): PaperclipWakeIssue | null 
   const status = asString(issue.status, "").trim() || null;
   const workMode = asString(issue.workMode, "").trim() || null;
   const priority = asString(issue.priority, "").trim() || null;
+  const goalObj = parseObject(issue.goal);
+  const goalAncestors = Array.isArray(goalObj.ancestors)
+    ? goalObj.ancestors
+        .map((entry) => {
+          const ancestor = parseObject(entry);
+          const ancestorId = asString(ancestor.id, "").trim() || null;
+          const ancestorTitle = asString(ancestor.title, "").trim() || null;
+          if (!ancestorId && !ancestorTitle) return null;
+          return {
+            id: ancestorId,
+            title: ancestorTitle,
+            level: asString(ancestor.level, "").trim() || null,
+            status: asString(ancestor.status, "").trim() || null,
+            description: asString(ancestor.description, "").trim() || null,
+          };
+        })
+        .filter((entry): entry is PaperclipWakeIssueGoalAncestor => Boolean(entry))
+    : [];
+  const goalId = asString(issue.goalId, "").trim() || null;
+  const goalTitle = asString(goalObj.title, "").trim() || null;
+  const goal =
+    goalId || goalTitle
+      ? {
+          id: asString(goalObj.id, "").trim() || goalId,
+          title: goalTitle,
+          status: asString(goalObj.status, "").trim() || null,
+          level: asString(goalObj.level, "").trim() || null,
+          ownerAgentId: asString(goalObj.ownerAgentId, "").trim() || null,
+          description: asString(goalObj.description, "").trim() || null,
+          descriptionTruncated: asBoolean(goalObj.descriptionTruncated, false),
+          ancestors: goalAncestors,
+        }
+      : null;
   if (!id && !identifier && !title) return null;
   return {
     id,
@@ -488,6 +411,8 @@ function normalizePaperclipWakeIssue(value: unknown): PaperclipWakeIssue | null 
     status,
     workMode,
     priority,
+    goalId,
+    goal,
   };
 }
 
@@ -821,6 +746,25 @@ export function renderPaperclipWakePrompt(
   if (normalized.issue?.priority) {
     lines.push(`- issue priority: ${normalized.issue.priority}`);
   }
+  if (normalized.issue?.goalId) {
+    lines.push(`- issue goal id: ${normalized.issue.goalId}`);
+  }
+  if (normalized.issue?.goal) {
+    const goal = normalized.issue.goal;
+    lines.push(`- issue goal: ${goal.title ?? goal.id ?? "unknown"}`);
+    if (goal.level) lines.push(`- issue goal level: ${goal.level}`);
+    if (goal.status) lines.push(`- issue goal status: ${goal.status}`);
+    if (goal.ownerAgentId) lines.push(`- issue goal owner: agent ${goal.ownerAgentId}`);
+    if (goal.ancestors.length > 0) {
+      lines.push(`- issue goal ancestors: ${goal.ancestors.map((ancestor: PaperclipWakeIssueGoalAncestor) => ancestor.title ?? ancestor.id ?? "unknown").join(" > ")}`);
+    }
+    if (goal.description) {
+      lines.push("", "Issue goal context:", goal.description);
+      if (goal.descriptionTruncated) {
+        lines.push("[issue goal description truncated]");
+      }
+    }
+  }
   if (normalized.issue?.workMode === "planning") {
     const hasWakeComments = normalized.comments.length > 0;
     const acceptedPlanContinuation =
@@ -848,7 +792,7 @@ export function renderPaperclipWakePrompt(
     lines.push("- execution scope: respond or triage the human comment; do not treat blocker-dependent deliverable work as unblocked");
     if (normalized.unresolvedBlockerSummaries.length > 0) {
       const blockers = normalized.unresolvedBlockerSummaries
-        .map((blocker) => `${blocker.identifier ?? blocker.id ?? "unknown"}${blocker.title ? ` ${blocker.title}` : ""}${blocker.status ? ` (${blocker.status})` : ""}`)
+        .map((blocker: PaperclipWakeBlockerSummary) => `${blocker.identifier ?? blocker.id ?? "unknown"}${blocker.title ? ` ${blocker.title}` : ""}${blocker.status ? ` (${blocker.status})` : ""}`)
         .join("; ");
       lines.push(`- unresolved blockers: ${blockers}`);
     } else if (normalized.unresolvedBlockerIssueIds.length > 0) {

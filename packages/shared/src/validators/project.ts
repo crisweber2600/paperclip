@@ -2,6 +2,10 @@ import { z } from "zod";
 import { PROJECT_STATUSES, PROJECT_ICON_NAMES } from "../constants.js";
 import { envConfigSchema } from "./secret.js";
 import { trustAuthorizationPolicySchema } from "./trust-policy.js";
+import {
+  acceptanceEvidenceEntryListSchema,
+  governingArtifactReferenceListSchema,
+} from "./governing-artifact.js";
 
 const executionWorkspaceStrategySchema = z
   .object({
@@ -109,6 +113,8 @@ const projectFields = {
   color: z.string().optional().nullable(),
   icon: z.enum(PROJECT_ICON_NAMES).optional().nullable(),
   env: envConfigSchema.optional().nullable(),
+  governingArtifacts: governingArtifactReferenceListSchema.optional().nullable(),
+  acceptanceEvidence: acceptanceEvidenceEntryListSchema.optional().nullable(),
   executionWorkspacePolicy: projectExecutionWorkspacePolicySchema.optional().nullable(),
   archivedAt: z.string().datetime().optional().nullable(),
 };

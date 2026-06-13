@@ -28,9 +28,11 @@ const mockGoalReviewService = vi.hoisted(() => ({
 
 const mockGoalService = vi.hoisted(() => ({
   recordVerdict: vi.fn(),
+  update: vi.fn(),
 }));
 
 const mockIssueService = vi.hoisted(() => ({
+  create: vi.fn(),
   list: vi.fn(),
   listDependencyReadiness: vi.fn(),
 }));
@@ -109,6 +111,14 @@ const reviewGoals = [
     status: "active",
     parentId: null,
     ownerAgentId: AGENT_ID,
+    acceptanceCriteria: ["Launch the first version"],
+    lastVerdict: null,
+    lastVerdictReason: null,
+    lastVerdictAt: null,
+    verdictStreak: 0,
+    verdictStale: true,
+    pausedAt: null,
+    pauseReason: null,
     ancestors: [],
     executionPath: { openIssueCount: 0, openProjectCount: 0, hasExecutionPath: false },
     needsPlanning: true,
@@ -121,6 +131,14 @@ const reviewGoals = [
     status: "active",
     parentId: null,
     ownerAgentId: AGENT_ID,
+    acceptanceCriteria: ["Increase revenue"],
+    lastVerdict: "progressing",
+    lastVerdictReason: "moving",
+    lastVerdictAt: "2026-06-09T08:00:00.000Z",
+    verdictStreak: 1,
+    verdictStale: false,
+    pausedAt: null,
+    pauseReason: null,
     ancestors: [],
     executionPath: { openIssueCount: 2, openProjectCount: 1, hasExecutionPath: true },
     needsPlanning: false,
@@ -132,10 +150,21 @@ describe.sequential("agent goal review routes", () => {
     vi.clearAllMocks();
     mockAgentService.getById.mockResolvedValue(mockAgent);
     mockGoalReviewService.buildGoalReview.mockResolvedValue(reviewGoals);
+    mockGoalReviewService.listOwnedActiveGoals.mockResolvedValue([]);
     mockGoalReviewService.getGoalReviewState.mockResolvedValue({
       lastCheckedAt: "2026-06-09T06:00:00.000Z",
     });
     mockGoalReviewService.stampGoalReviewState.mockResolvedValue(undefined);
+    mockGoalService.update.mockResolvedValue({
+      id: reviewGoals[0].id,
+      status: "achieved",
+    });
+    mockIssueService.create.mockResolvedValue({
+      id: "88888888-8888-4888-8888-888888888888",
+      identifier: "PAP-99",
+      title: "Plan: Ship V1",
+    });
+    mockDb.select.mockReset();
   });
 
   it("requires agent authentication", async () => {
@@ -202,10 +231,6 @@ describe.sequential("agent goal review routes", () => {
   });
 
   it("rejects verdicts for goals the agent does not own", async () => {
-    mockGoalReviewService.listOwnedActiveGoals.mockResolvedValue([
-      { id: reviewGoals[0].id, lastVerdict: null, verdictStreak: 0 },
-    ]);
-
     const res = await request(createApp(agentActor()))
       .post("/api/agents/me/goal-review/verdicts")
       .send({
@@ -227,11 +252,38 @@ describe.sequential("agent goal review routes", () => {
     expect(mockGoalService.recordVerdict).not.toHaveBeenCalled();
   });
 
+  it("requires a concrete lack-of-progress reason for stalled verdicts", async () => {
+    const res = await request(createApp(agentActor()))
+      .post("/api/agents/me/goal-review/verdicts")
+      .send({ verdicts: [{ goalId: reviewGoals[0].id, verdict: "stalled", reason: "investigating" }] });
+
+    expect(res.status).toBe(422);
+    expect(String(res.body.error)).toContain("Stalled goal-review verdicts require");
+    expect(mockGoalService.recordVerdict).not.toHaveBeenCalled();
+  });
+
+  it("requires a dependency path or unblock owner for blocked verdicts", async () => {
+    const res = await request(createApp(agentActor()))
+      .post("/api/agents/me/goal-review/verdicts")
+      .send({ verdicts: [{ goalId: reviewGoals[0].id, verdict: "blocked", reason: "hard problem" }] });
+
+    expect(res.status).toBe(422);
+    expect(String(res.body.error)).toContain("Blocked goal-review verdicts require");
+    expect(mockGoalService.recordVerdict).not.toHaveBeenCalled();
+  });
+
   it("records verdicts, logs activity, and stamps attention state", async () => {
     const goalId = reviewGoals[0].id;
-    mockGoalReviewService.listOwnedActiveGoals
-      .mockResolvedValueOnce([{ id: goalId, lastVerdict: null, verdictStreak: 0 }])
-      .mockResolvedValueOnce([{ id: goalId, lastVerdict: "stalled", verdictStreak: 2 }]);
+    mockDb.select.mockReturnValue({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          orderBy: vi.fn(() => Promise.resolve([])),
+        })),
+      })),
+    });
+    mockGoalReviewService.listOwnedActiveGoals.mockResolvedValue([
+      { id: goalId, lastVerdict: "stalled", verdictStreak: 2 },
+    ]);
     mockGoalService.recordVerdict.mockResolvedValue({
       id: goalId,
       verdictStreak: 2,
@@ -239,7 +291,7 @@ describe.sequential("agent goal review routes", () => {
 
     const res = await request(createApp(agentActor()))
       .post("/api/agents/me/goal-review/verdicts")
-      .send({ verdicts: [{ goalId, verdict: "stalled", reason: "no recent movement" }] });
+      .send({ verdicts: [{ goalId, verdict: "stalled", reason: "no movement since last review" }] });
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual(
@@ -247,6 +299,9 @@ describe.sequential("agent goal review routes", () => {
         agentId: AGENT_ID,
         recordedCount: 1,
         attentionGoalCount: 1,
+        planningIssues: [
+          expect.objectContaining({ goalId, issueId: "88888888-8888-4888-8888-888888888888", reused: false }),
+        ],
         results: [
           expect.objectContaining({ goalId, verdict: "stalled", verdictStreak: 2 }),
         ],
@@ -256,8 +311,17 @@ describe.sequential("agent goal review routes", () => {
       goalId,
       expect.objectContaining({
         verdict: "stalled",
-        reason: "no recent movement",
+        reason: "no movement since last review",
         byAgentId: AGENT_ID,
+      }),
+    );
+    expect(mockIssueService.create).toHaveBeenCalledWith(
+      COMPANY_ID,
+      expect.objectContaining({
+        title: "Plan: Ship V1",
+        goalId,
+        workMode: "planning",
+        assigneeAgentId: AGENT_ID,
       }),
     );
     expect(mockLogActivity).toHaveBeenCalledWith(
@@ -273,6 +337,15 @@ describe.sequential("agent goal review routes", () => {
         }),
       }),
     );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      mockDb,
+      expect.objectContaining({
+        action: "goal.review_planning_issue_ensured",
+        entityType: "goal",
+        entityId: goalId,
+        details: expect.objectContaining({ issueIdentifier: "PAP-99", reused: false }),
+      }),
+    );
     expect(mockLogActivity).not.toHaveBeenCalledWith(
       mockDb,
       expect.objectContaining({ action: "goal.review_attention_exhausted" }),
@@ -286,11 +359,67 @@ describe.sequential("agent goal review routes", () => {
     );
   });
 
+  it("marks goals achieved immediately for done verdicts", async () => {
+    const goalId = reviewGoals[1].id;
+    mockGoalService.update.mockResolvedValue({
+      id: goalId,
+      status: "achieved",
+    });
+    mockGoalReviewService.buildGoalReview.mockResolvedValue([
+      {
+        ...reviewGoals[1],
+        status: "active",
+        needsPlanning: false,
+      },
+    ]);
+    mockGoalReviewService.listOwnedActiveGoals.mockResolvedValue([]);
+    mockGoalService.recordVerdict.mockResolvedValue({
+      id: goalId,
+      verdictStreak: 2,
+    });
+
+    const res = await request(createApp(agentActor()))
+      .post("/api/agents/me/goal-review/verdicts")
+      .send({ verdicts: [{ goalId, verdict: "done", reason: "explicit evidence in linked issues and artifacts" }] });
+
+    expect(res.status).toBe(200);
+    expect(mockGoalService.update).toHaveBeenCalledWith(goalId, { status: "achieved" });
+    expect(mockLogActivity.mock.calls).toEqual(
+      expect.arrayContaining([
+        [
+          mockDb,
+          expect.objectContaining({
+            action: "goal.review_goal_achieved",
+            entityType: "goal",
+            entityId: goalId,
+            details: expect.objectContaining({
+              verdict: "done",
+              reason: "explicit evidence in linked issues and artifacts",
+              source: "owner_review",
+            }),
+          }),
+        ],
+      ]),
+    );
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+  });
+
   it("logs attention exhaustion exactly at the streak cap", async () => {
     const goalId = reviewGoals[0].id;
-    mockGoalReviewService.listOwnedActiveGoals
-      .mockResolvedValueOnce([{ id: goalId, lastVerdict: "stalled", verdictStreak: 5 }])
-      .mockResolvedValueOnce([{ id: goalId, lastVerdict: "stalled", verdictStreak: 6 }]);
+    mockDb.select.mockReturnValue({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          orderBy: vi.fn(() => Promise.resolve([{
+            id: "77777777-7777-4777-8777-777777777777",
+            identifier: "PAP-17",
+            title: "Plan: Ship V1",
+          }])),
+        })),
+      })),
+    });
+    mockGoalReviewService.listOwnedActiveGoals.mockResolvedValue([
+      { id: goalId, lastVerdict: "stalled", verdictStreak: 6 },
+    ]);
     mockGoalService.recordVerdict.mockResolvedValue({
       id: goalId,
       verdictStreak: 6,
@@ -298,9 +427,13 @@ describe.sequential("agent goal review routes", () => {
 
     const res = await request(createApp(agentActor()))
       .post("/api/agents/me/goal-review/verdicts")
-      .send({ verdicts: [{ goalId, verdict: "stalled", reason: "still stuck" }] });
+      .send({ verdicts: [{ goalId, verdict: "stalled", reason: "stalled waiting on next unblock step" }] });
 
     expect(res.status).toBe(200);
+    expect(res.body.planningIssues).toEqual([
+      expect.objectContaining({ goalId, issueId: "77777777-7777-4777-8777-777777777777", identifier: "PAP-17", reused: true }),
+    ]);
+    expect(mockIssueService.create).not.toHaveBeenCalled();
     expect(mockLogActivity).toHaveBeenCalledWith(
       mockDb,
       expect.objectContaining({
