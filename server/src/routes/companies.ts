@@ -29,6 +29,7 @@ import {
 import type { StorageService } from "../storage/types.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 import { COMPANY_IMPORT_ROUTE_PATH } from "./company-import-paths.js";
+import { withPaperclipSpan } from "../observability/tracing.js";
 
 export function companyRoutes(db: Db, storage?: StorageService) {
   const router = Router();
@@ -95,7 +96,14 @@ export function companyRoutes(db: Db, storage?: StorageService) {
 
   router.get("/", async (req, res) => {
     assertBoard(req);
-    const result = await svc.list();
+    const result = await withPaperclipSpan(
+      "companies.list",
+      {
+        "paperclip.actor_source": req.actor.source,
+        "paperclip.is_instance_admin": req.actor.isInstanceAdmin,
+      },
+      async () => svc.list(),
+    );
     if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) {
       res.json(result);
       return;

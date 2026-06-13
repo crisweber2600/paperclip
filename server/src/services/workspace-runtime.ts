@@ -29,6 +29,7 @@ import {
 import type { WorkspaceOperationRecorder } from "./workspace-operations.js";
 import { readExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
+import { withPaperclipSpan } from "../observability/tracing.js";
 
 export function resolveShell(): string {
   const fallback = process.platform === "win32" ? "sh" : "/bin/sh";
@@ -479,38 +480,55 @@ async function executeProcess(input: {
   stdoutBytes: number;
   stderrBytes: number;
 }> {
-  const proc = await new Promise<{
-    stdout: ProcessOutputAccumulator;
-    stderr: ProcessOutputAccumulator;
-    code: number | null;
-  }>((resolve, reject) => {
-    const child = spawn(input.command, input.args, {
-      cwd: input.cwd,
-      stdio: ["ignore", "pipe", "pipe"],
-      env: input.env ?? process.env,
-    });
-    const stdout = createProcessOutputCapture(input.maxStdoutBytes ?? DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES);
-    const stderr = createProcessOutputCapture(input.maxStderrBytes ?? DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES);
-    child.stdout?.on("data", (chunk) => {
-      stdout.append(String(chunk));
-    });
-    child.stderr?.on("data", (chunk) => {
-      stderr.append(String(chunk));
-    });
-    child.on("error", reject);
-    child.on("close", (code) => resolve({ stdout, stderr, code }));
-  });
-  const stdout = proc.stdout.finish();
-  const stderr = proc.stderr.finish();
-  return {
-    stdout: stdout.text,
-    stderr: stderr.text,
-    code: proc.code,
-    stdoutTruncated: stdout.truncated,
-    stderrTruncated: stderr.truncated,
-    stdoutBytes: stdout.totalBytes,
-    stderrBytes: stderr.totalBytes,
-  };
+  return withPaperclipSpan(
+    "workspace.execute_process",
+    {
+      "process.command": input.command,
+      "process.args.count": input.args.length,
+      "process.cwd": input.cwd,
+    },
+    async (span) => {
+      const proc = await new Promise<{
+        stdout: ProcessOutputAccumulator;
+        stderr: ProcessOutputAccumulator;
+        code: number | null;
+      }>((resolve, reject) => {
+        const child = spawn(input.command, input.args, {
+          cwd: input.cwd,
+          stdio: ["ignore", "pipe", "pipe"],
+          env: input.env ?? process.env,
+        });
+        const stdout = createProcessOutputCapture(input.maxStdoutBytes ?? DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES);
+        const stderr = createProcessOutputCapture(input.maxStderrBytes ?? DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES);
+        child.stdout?.on("data", (chunk) => {
+          stdout.append(String(chunk));
+        });
+        child.stderr?.on("data", (chunk) => {
+          stderr.append(String(chunk));
+        });
+        child.on("error", reject);
+        child.on("close", (code) => resolve({ stdout, stderr, code }));
+      });
+      const stdout = proc.stdout.finish();
+      const stderr = proc.stderr.finish();
+      span.setAttributes({
+        "process.exit_code": proc.code ?? -1,
+        "process.stdout.bytes": stdout.totalBytes,
+        "process.stderr.bytes": stderr.totalBytes,
+        "process.stdout.truncated": stdout.truncated,
+        "process.stderr.truncated": stderr.truncated,
+      });
+      return {
+        stdout: stdout.text,
+        stderr: stderr.text,
+        code: proc.code,
+        stdoutTruncated: stdout.truncated,
+        stderrTruncated: stderr.truncated,
+        stdoutBytes: stdout.totalBytes,
+        stderrBytes: stderr.totalBytes,
+      };
+    },
+  );
 }
 
 async function runGit(args: string[], cwd: string): Promise<string> {

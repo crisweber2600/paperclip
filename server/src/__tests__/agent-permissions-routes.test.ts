@@ -87,6 +87,11 @@ const mockGoalExecutionService = vi.hoisted(() => ({
   listReviewForAgent: vi.fn(),
 }));
 
+const mockGoalService = vi.hoisted(() => ({
+  getById: vi.fn(),
+  update: vi.fn(),
+}));
+
 const mockSecretService = vi.hoisted(() => ({
   normalizeAdapterConfigForPersistence: vi.fn(),
   resolveAdapterConfigForRuntime: vi.fn(),
@@ -202,6 +207,7 @@ function registerModuleMocks() {
     heartbeatService: () => mockHeartbeatService,
     ISSUE_LIST_DEFAULT_LIMIT: 500,
     goalExecutionService: () => mockGoalExecutionService,
+    goalService: () => mockGoalService,
     issueApprovalService: () => mockIssueApprovalService,
     issueService: () => mockIssueService,
     logActivity: mockLogActivity,
@@ -329,6 +335,8 @@ describe.sequential("agent permission routes", () => {
     mockIssueApprovalService.linkManyForApproval.mockReset();
     mockIssueService.list.mockReset();
     mockGoalExecutionService.listReviewForAgent.mockReset();
+    mockGoalService.getById.mockReset();
+    mockGoalService.update.mockReset();
     mockSecretService.normalizeAdapterConfigForPersistence.mockReset();
     mockSecretService.resolveAdapterConfigForRuntime.mockReset();
     mockAgentInstructionsService.materializeManagedBundle.mockReset();
@@ -404,6 +412,8 @@ describe.sequential("agent permission routes", () => {
     });
     mockLogActivity.mockResolvedValue(undefined);
     mockGoalExecutionService.listReviewForAgent.mockResolvedValue([]);
+    mockGoalService.getById.mockResolvedValue(null);
+    mockGoalService.update.mockResolvedValue(null);
   });
 
   it("redacts agent detail for authenticated company members without agent admin permission", async () => {
@@ -1506,6 +1516,122 @@ describe.sequential("agent permission routes", () => {
       companyId,
       agentId,
     });
+  });
+
+  it("supports the singular CEO goal review route used by agent instructions", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      role: "ceo",
+    });
+    mockGoalExecutionService.listReviewForAgent.mockResolvedValue([
+      {
+        id: "goal-1",
+        title: "Launch",
+        description: "Launch the company",
+        level: "company",
+        status: "active",
+        parentId: null,
+        ownerAgentId: agentId,
+        ancestry: [],
+        childGoalCount: 0,
+        linkedProjects: [],
+        openIssuesByStatus: {
+          backlog: 0,
+          todo: 0,
+          in_progress: 0,
+          in_review: 0,
+          done: 0,
+          blocked: 0,
+          cancelled: 0,
+        },
+        openIssues: [],
+        hasNonBlockedOpenIssue: false,
+        hasIssueAssignedToCurrentAgent: false,
+        recommendedAction: "needs_planning_issue",
+      },
+    ]);
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      runId: "run-1",
+      source: "agent_key",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get("/api/agents/me/goal-review"));
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([
+      expect.objectContaining({
+        id: "goal-1",
+        recommendedAction: "needs_planning_issue",
+      }),
+    ]);
+    expect(mockGoalExecutionService.listReviewForAgent).toHaveBeenCalledWith({ companyId, agentId });
+  });
+
+  it("marks done verdict goals achieved via the goal review verdict route", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      role: "ceo",
+    });
+    mockGoalService.getById.mockResolvedValue({
+      id: "goal-1",
+      companyId,
+      title: "Launch",
+      description: null,
+      level: "company",
+      status: "active",
+      parentId: null,
+      ownerAgentId: agentId,
+      createdAt: new Date("2026-03-19T00:00:00.000Z"),
+      updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+    });
+    mockGoalService.update.mockResolvedValue({
+      id: "goal-1",
+      companyId,
+      title: "Launch",
+      description: null,
+      level: "company",
+      status: "achieved",
+      parentId: null,
+      ownerAgentId: agentId,
+      createdAt: new Date("2026-03-19T00:00:00.000Z"),
+      updatedAt: new Date("2026-03-19T01:00:00.000Z"),
+    });
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      runId: "run-1",
+      source: "agent_key",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post("/api/agents/me/goal-review/verdicts")
+      .send([{ goalId: "goal-1", verdict: "done" }]));
+
+    expect(res.status).toBe(201);
+    expect(res.body).toEqual({
+      verdicts: [
+        {
+          goalId: "goal-1",
+          verdict: "done",
+          status: "updated",
+          goalStatus: "achieved",
+        },
+      ],
+    });
+    expect(mockGoalService.getById).toHaveBeenCalledWith("goal-1");
+    expect(mockGoalService.update).toHaveBeenCalledWith("goal-1", { status: "achieved" });
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      companyId,
+      action: "goal.updated",
+      entityType: "goal",
+      entityId: "goal-1",
+    }));
   });
 
   it("rejects non-CEO agents from CEO goal review", async () => {

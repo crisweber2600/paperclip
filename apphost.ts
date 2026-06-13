@@ -14,6 +14,7 @@ paperclip = await paperclip.withEnvironment("PAPERCLIP_DEPLOYMENT_MODE", "local_
 paperclip = await paperclip.withEnvironment("PAPERCLIP_DEPLOYMENT_EXPOSURE", "private");
 paperclip = await paperclip.withEnvironment("PAPERCLIP_AUTH_BASE_URL_MODE", "auto");
 paperclip = await paperclip.withEnvironment("PAPERCLIP_AUTH_PUBLIC_BASE_URL", "");
+paperclip = await paperclip.withEnvironment("PAPERCLIP_INSTANCE_ID", "DevInstance");
 paperclip = await paperclip.withEnvironment("PAPERCLIP_MIGRATION_AUTO_APPLY", "true");
 paperclip = await paperclip.withEnvironment("PAPERCLIP_MIGRATION_PROMPT", "never");
 paperclip = await paperclip.withEnvironment("PAPERCLIP_UI_DEV_MIDDLEWARE", "true");

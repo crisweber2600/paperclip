@@ -1,0 +1,62 @@
+{
+  "format": 1,
+  "restore": {
+    "AspireRestore": {}
+  },
+  "projects": {
+    "AspireRestore": {
+      "restore": {
+        "projectUniqueName": "AspireRestore",
+        "projectName": "AspireRestore",
+        "projectPath": "/home/cweber/paperclip/paperclip/.aspire/integrations/package-restore/5195D3A1D0237362/obj/project.json",
+        "packagesPath": "/home/cweber/.nuget/packages/",
+        "outputPath": "/home/cweber/paperclip/paperclip/.aspire/integrations/package-restore/5195D3A1D0237362/obj",
+        "projectStyle": "PackageReference",
+        "UsingMicrosoftNETSdk": false,
+        "configFilePaths": [
+          "/home/cweber/.nuget/NuGet/NuGet.Config"
+        ],
+        "originalTargetFrameworks": [
+          "net10.0"
+        ],
+        "sources": {
+          "https://api.nuget.org/v3/index.json": {},
+          "https://pkgs.dev.azure.com/dnceng/public/_packaging/dotnet9/nuget/v3/index.json": {}
+        },
+        "frameworks": {
+          "net10.0": {
+            "framework": "net10.0",
+            "targetAlias": "net10.0",
+            "projectReferences": {}
+          }
+        }
+      },
+      "frameworks": {
+        "net10.0": {
+          "framework": "net10.0",
+          "targetAlias": "net10.0",
+          "dependencies": {
+            "Aspire.Hosting": {
+              "target": "Package",
+              "version": "[13.3.5, )"
+            },
+            "Aspire.Hosting.CodeGeneration.TypeScript": {
+              "target": "Package",
+              "version": "[13.3.5, )"
+            },
+            "Aspire.Hosting.JavaScript": {
+              "target": "Package",
+              "version": "[13.3.5, )"
+            }
+          },
+          "runtimeIdentifierGraphPath": "/home/cweber/paperclip/paperclip/.aspire/integrations/package-restore/5195D3A1D0237362/obj/RuntimeIdentifierGraph.json"
+        }
+      },
+      "runtimes": {
+        "linux-x64": {
+          "#import": []
+        }
+      }
+    }
+  }
+}

@@ -41,6 +41,7 @@ import type { PluginJobStore } from "./plugin-job-store.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { parseCron, nextCronTick, validateCron } from "./cron.js";
 import { logger } from "../middleware/logger.js";
+import { withPaperclipSpan } from "../observability/tracing.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -255,73 +256,86 @@ export function createPluginJobScheduler(
     lastTickAt = new Date();
 
     try {
-      const now = new Date();
+      await withPaperclipSpan(
+        "plugin.job.tick",
+        {
+          "paperclip.scheduler": "plugin-job-scheduler",
+          "paperclip.active_jobs": activeJobs.size,
+          "paperclip.tick_count": tickCount,
+        },
+        async (span) => {
+          const now = new Date();
 
-      // Query for jobs whose nextRunAt has passed and are active.
-      // We include jobs with null nextRunAt since they may have just been
-      // registered and need their first run calculated.
-      const dueJobs = await db
-        .select()
-        .from(pluginJobs)
-        .where(
-          and(
-            eq(pluginJobs.status, "active"),
-            lte(pluginJobs.nextRunAt, now),
-          ),
-        );
+          // Query for jobs whose nextRunAt has passed and are active.
+          // We include jobs with null nextRunAt since they may have just been
+          // registered and need their first run calculated.
+          const dueJobs = await db
+            .select()
+            .from(pluginJobs)
+            .where(
+              and(
+                eq(pluginJobs.status, "active"),
+                lte(pluginJobs.nextRunAt, now),
+              ),
+            );
 
-      if (dueJobs.length === 0) {
-        return;
-      }
+          span.setAttribute("paperclip.due_jobs", dueJobs.length);
+          if (dueJobs.length === 0) {
+            return;
+          }
 
-      log.debug({ count: dueJobs.length }, "found due jobs");
+          log.debug({ count: dueJobs.length }, "found due jobs");
 
-      // Dispatch each due job (respecting concurrency limits)
-      const dispatches: Promise<void>[] = [];
+          // Dispatch each due job (respecting concurrency limits)
+          const dispatches: Promise<void>[] = [];
 
-      for (const job of dueJobs) {
-        // Concurrency limit
-        if (activeJobs.size >= maxConcurrentJobs) {
-          log.warn(
-            { maxConcurrentJobs, activeJobCount: activeJobs.size },
-            "max concurrent jobs reached, deferring remaining jobs",
-          );
-          break;
-        }
+          for (const job of dueJobs) {
+            // Concurrency limit
+            if (activeJobs.size >= maxConcurrentJobs) {
+              log.warn(
+                { maxConcurrentJobs, activeJobCount: activeJobs.size },
+                "max concurrent jobs reached, deferring remaining jobs",
+              );
+              span.setAttribute("paperclip.max_concurrent_reached", true);
+              break;
+            }
 
-        // Overlap prevention: skip if this job is already running
-        if (activeJobs.has(job.id)) {
-          log.debug(
-            { jobId: job.id, jobKey: job.jobKey, pluginId: job.pluginId },
-            "skipping job — already running (overlap prevention)",
-          );
-          continue;
-        }
+            // Overlap prevention: skip if this job is already running
+            if (activeJobs.has(job.id)) {
+              log.debug(
+                { jobId: job.id, jobKey: job.jobKey, pluginId: job.pluginId },
+                "skipping job — already running (overlap prevention)",
+              );
+              continue;
+            }
 
-        // Check if the worker is available
-        if (!workerManager.isRunning(job.pluginId)) {
-          log.debug(
-            { jobId: job.id, pluginId: job.pluginId },
-            "skipping job — worker not running",
-          );
-          continue;
-        }
+            // Check if the worker is available
+            if (!workerManager.isRunning(job.pluginId)) {
+              log.debug(
+                { jobId: job.id, pluginId: job.pluginId },
+                "skipping job — worker not running",
+              );
+              continue;
+            }
 
-        // Validate cron expression before dispatching
-        if (!job.schedule) {
-          log.warn(
-            { jobId: job.id, jobKey: job.jobKey },
-            "skipping job — no schedule defined",
-          );
-          continue;
-        }
+            // Validate cron expression before dispatching
+            if (!job.schedule) {
+              log.warn(
+                { jobId: job.id, jobKey: job.jobKey },
+                "skipping job — no schedule defined",
+              );
+              continue;
+            }
 
-        dispatches.push(dispatchJob(job));
-      }
+            dispatches.push(dispatchJob(job));
+          }
 
-      if (dispatches.length > 0) {
-        await Promise.allSettled(dispatches);
-      }
+          span.setAttribute("paperclip.dispatch_count", dispatches.length);
+          if (dispatches.length > 0) {
+            await Promise.allSettled(dispatches);
+          }
+        },
+      );
     } catch (err) {
       log.error(
         { err: err instanceof Error ? err.message : String(err) },
@@ -353,42 +367,55 @@ export function createPluginJobScheduler(
     const startedAt = Date.now();
 
     try {
-      // 1. Create run record
-      const run = await jobStore.createRun({
-        jobId,
-        pluginId,
-        trigger: "schedule",
-      });
-      runId = run.id;
-
-      jobLog.info({ runId }, "dispatching scheduled job");
-
-      // 2. Mark run as running
-      await jobStore.markRunning(runId);
-
-      // 3. Call worker via RPC
-      await workerManager.call(
-        pluginId,
-        "runJob",
+      await withPaperclipSpan(
+        "plugin.job.dispatch",
         {
-          job: {
-            jobKey,
-            runId,
-            trigger: "schedule" as const,
-            scheduledAt: (job.nextRunAt ?? new Date()).toISOString(),
-          },
+          "paperclip.job_id": jobId,
+          "paperclip.plugin_id": pluginId,
+          "paperclip.job_key": jobKey,
+          "paperclip.trigger": "schedule",
         },
-        jobTimeoutMs,
+        async (span) => {
+          // 1. Create run record
+          const run = await jobStore.createRun({
+            jobId,
+            pluginId,
+            trigger: "schedule",
+          });
+          runId = run.id;
+          span.setAttribute("paperclip.run_id", runId);
+
+          jobLog.info({ runId }, "dispatching scheduled job");
+
+          // 2. Mark run as running
+          await jobStore.markRunning(runId);
+
+          // 3. Call worker via RPC
+          await workerManager.call(
+            pluginId,
+            "runJob",
+            {
+              job: {
+                jobKey,
+                runId,
+                trigger: "schedule" as const,
+                scheduledAt: (job.nextRunAt ?? new Date()).toISOString(),
+              },
+            },
+            jobTimeoutMs,
+          );
+
+          // 4. Mark run as succeeded
+          const durationMs = Date.now() - startedAt;
+          span.setAttribute("paperclip.duration_ms", durationMs);
+          await jobStore.completeRun(runId, {
+            status: "succeeded",
+            durationMs,
+          });
+
+          jobLog.info({ runId, durationMs }, "job completed successfully");
+        },
       );
-
-      // 4. Mark run as succeeded
-      const durationMs = Date.now() - startedAt;
-      await jobStore.completeRun(runId, {
-        status: "succeeded",
-        durationMs,
-      });
-
-      jobLog.info({ runId, durationMs }, "job completed successfully");
     } catch (err) {
       const durationMs = Date.now() - startedAt;
       const errorMessage = err instanceof Error ? err.message : String(err);
@@ -440,59 +467,74 @@ export function createPluginJobScheduler(
     jobId: string,
     trigger: "manual" | "retry" = "manual",
   ): Promise<TriggerJobResult> {
-    const job = await jobStore.getJobById(jobId);
-    if (!job) {
-      throw new Error(`Job not found: ${jobId}`);
-    }
+    return withPaperclipSpan(
+      "plugin.job.trigger",
+      {
+        "paperclip.job_id": jobId,
+        "paperclip.trigger": trigger,
+      },
+      async (span) => {
+        const job = await jobStore.getJobById(jobId);
+        if (!job) {
+          throw new Error(`Job not found: ${jobId}`);
+        }
 
-    if (job.status !== "active") {
-      throw new Error(
-        `Job "${job.jobKey}" is not active (status: ${job.status})`,
-      );
-    }
+        span.setAttribute("paperclip.plugin_id", job.pluginId);
+        span.setAttribute("paperclip.job_key", job.jobKey);
 
-    // Overlap prevention
-    if (activeJobs.has(jobId)) {
-      throw new Error(
-        `Job "${job.jobKey}" is already running — cannot trigger while in progress`,
-      );
-    }
+        if (job.status !== "active") {
+          throw new Error(
+            `Job "${job.jobKey}" is not active (status: ${job.status})`,
+          );
+        }
 
-    // Also check DB for running runs (defensive — covers multi-instance)
-    const existingRuns = await db
-      .select()
-      .from(pluginJobRuns)
-      .where(
-        and(
-          eq(pluginJobRuns.jobId, jobId),
-          eq(pluginJobRuns.status, "running"),
-        ),
-      );
+        // Overlap prevention
+        if (activeJobs.has(jobId)) {
+          throw new Error(
+            `Job "${job.jobKey}" is already running — cannot trigger while in progress`,
+          );
+        }
 
-    if (existingRuns.length > 0) {
-      throw new Error(
-        `Job "${job.jobKey}" already has a running execution — cannot trigger while in progress`,
-      );
-    }
+        // Also check DB for running runs (defensive — covers multi-instance)
+        const existingRuns = await db
+          .select()
+          .from(pluginJobRuns)
+          .where(
+            and(
+              eq(pluginJobRuns.jobId, jobId),
+              eq(pluginJobRuns.status, "running"),
+            ),
+          );
 
-    // Check worker availability
-    if (!workerManager.isRunning(job.pluginId)) {
-      throw new Error(
-        `Worker for plugin "${job.pluginId}" is not running — cannot trigger job`,
-      );
-    }
+        span.setAttribute("paperclip.running_runs", existingRuns.length);
 
-    // Create the run and dispatch (non-blocking)
-    const run = await jobStore.createRun({
-      jobId,
-      pluginId: job.pluginId,
-      trigger,
-    });
+        if (existingRuns.length > 0) {
+          throw new Error(
+            `Job "${job.jobKey}" already has a running execution — cannot trigger while in progress`,
+          );
+        }
 
-    // Dispatch in background — don't block the caller
-    void dispatchManualRun(job, run.id, trigger);
+        // Check worker availability
+        if (!workerManager.isRunning(job.pluginId)) {
+          throw new Error(
+            `Worker for plugin "${job.pluginId}" is not running — cannot trigger job`,
+          );
+        }
 
-    return { runId: run.id, jobId };
+        // Create the run and dispatch (non-blocking)
+        const run = await jobStore.createRun({
+          jobId,
+          pluginId: job.pluginId,
+          trigger,
+        });
+        span.setAttribute("paperclip.run_id", run.id);
+
+        // Dispatch in background — don't block the caller
+        void dispatchManualRun(job, run.id, trigger);
+
+        return { runId: run.id, jobId };
+      },
+    );
   }
 
   /**
@@ -510,29 +552,42 @@ export function createPluginJobScheduler(
     const startedAt = Date.now();
 
     try {
-      await jobStore.markRunning(runId);
-
-      await workerManager.call(
-        pluginId,
-        "runJob",
+      await withPaperclipSpan(
+        "plugin.job.dispatch_manual",
         {
-          job: {
-            jobKey,
-            runId,
-            trigger,
-            scheduledAt: new Date().toISOString(),
-          },
+          "paperclip.job_id": jobId,
+          "paperclip.plugin_id": pluginId,
+          "paperclip.job_key": jobKey,
+          "paperclip.run_id": runId,
+          "paperclip.trigger": trigger,
         },
-        jobTimeoutMs,
+        async (span) => {
+          await jobStore.markRunning(runId);
+
+          await workerManager.call(
+            pluginId,
+            "runJob",
+            {
+              job: {
+                jobKey,
+                runId,
+                trigger,
+                scheduledAt: new Date().toISOString(),
+              },
+            },
+            jobTimeoutMs,
+          );
+
+          const durationMs = Date.now() - startedAt;
+          span.setAttribute("paperclip.duration_ms", durationMs);
+          await jobStore.completeRun(runId, {
+            status: "succeeded",
+            durationMs,
+          });
+
+          jobLog.info({ durationMs }, "manual job completed successfully");
+        },
       );
-
-      const durationMs = Date.now() - startedAt;
-      await jobStore.completeRun(runId, {
-        status: "succeeded",
-        durationMs,
-      });
-
-      jobLog.info({ durationMs }, "manual job completed successfully");
     } catch (err) {
       const durationMs = Date.now() - startedAt;
       const errorMessage = err instanceof Error ? err.message : String(err);
@@ -635,53 +690,68 @@ export function createPluginJobScheduler(
   // -----------------------------------------------------------------------
 
   async function registerPlugin(pluginId: string): Promise<void> {
-    log.info({ pluginId }, "registering plugin with job scheduler");
-    await ensureNextRunTimestamps(pluginId);
+    await withPaperclipSpan(
+      "plugin.job.register_plugin",
+      { "paperclip.plugin_id": pluginId },
+      async () => {
+        log.info({ pluginId }, "registering plugin with job scheduler");
+        await ensureNextRunTimestamps(pluginId);
+      },
+    );
   }
 
   async function unregisterPlugin(pluginId: string): Promise<void> {
-    log.info({ pluginId }, "unregistering plugin from job scheduler");
+    await withPaperclipSpan(
+      "plugin.job.unregister_plugin",
+      { "paperclip.plugin_id": pluginId },
+      async (span) => {
+        log.info({ pluginId }, "unregistering plugin from job scheduler");
 
-    // Cancel any in-flight run records for this plugin that are still
-    // queued or running. Active jobs in-memory will finish naturally.
-    try {
-      const runningRuns = await db
-        .select()
-        .from(pluginJobRuns)
-        .where(
-          and(
-            eq(pluginJobRuns.pluginId, pluginId),
-            or(
-              eq(pluginJobRuns.status, "running"),
-              eq(pluginJobRuns.status, "queued"),
-            ),
-          ),
-        );
+        // Cancel any in-flight run records for this plugin that are still
+        // queued or running. Active jobs in-memory will finish naturally.
+        try {
+          const runningRuns = await db
+            .select()
+            .from(pluginJobRuns)
+            .where(
+              and(
+                eq(pluginJobRuns.pluginId, pluginId),
+                or(
+                  eq(pluginJobRuns.status, "running"),
+                  eq(pluginJobRuns.status, "queued"),
+                ),
+              ),
+            );
 
-      for (const run of runningRuns) {
-        await jobStore.completeRun(run.id, {
-          status: "cancelled",
-          error: "Plugin unregistered",
-          durationMs: run.startedAt
-            ? Date.now() - run.startedAt.getTime()
-            : null,
-        });
-      }
-    } catch (err) {
-      log.error(
-        {
-          pluginId,
-          err: err instanceof Error ? err.message : String(err),
-        },
-        "error cancelling in-flight runs during unregister",
-      );
-    }
+          span.setAttribute("paperclip.running_runs", runningRuns.length);
 
-    // Remove any active tracking for jobs owned by this plugin
-    const jobs = await jobStore.listJobs(pluginId);
-    for (const job of jobs) {
-      activeJobs.delete(job.id);
-    }
+          for (const run of runningRuns) {
+            await jobStore.completeRun(run.id, {
+              status: "cancelled",
+              error: "Plugin unregistered",
+              durationMs: run.startedAt
+                ? Date.now() - run.startedAt.getTime()
+                : null,
+            });
+          }
+        } catch (err) {
+          log.error(
+            {
+              pluginId,
+              err: err instanceof Error ? err.message : String(err),
+            },
+            "error cancelling in-flight runs during unregister",
+          );
+        }
+
+        // Remove any active tracking for jobs owned by this plugin
+        const jobs = await jobStore.listJobs(pluginId);
+        span.setAttribute("paperclip.active_job_count", jobs.length);
+        for (const job of jobs) {
+          activeJobs.delete(job.id);
+        }
+      },
+    );
   }
 
   // -----------------------------------------------------------------------

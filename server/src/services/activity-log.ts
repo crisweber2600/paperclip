@@ -9,6 +9,7 @@ import { sanitizeRecord } from "../redaction.js";
 import { logger } from "../middleware/logger.js";
 import type { PluginEventBus } from "./plugin-event-bus.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { withPaperclipSpan } from "../observability/tracing.js";
 
 const PLUGIN_EVENT_SET: ReadonlySet<string> = new Set(PLUGIN_EVENT_TYPES);
 const ACTIVITY_ACTION_TO_PLUGIN_EVENT: Readonly<Record<string, PluginEventType>> = {
@@ -63,57 +64,71 @@ export interface LogActivityInput {
 }
 
 export async function logActivity(db: Db, input: LogActivityInput) {
-  const currentUserRedactionOptions = {
-    enabled: (await instanceSettingsService(db).getGeneral()).censorUsernameInLogs,
-  };
-  const sanitizedDetails = input.details ? sanitizeRecord(input.details) : null;
-  const redactedDetails = sanitizedDetails
-    ? redactCurrentUserValue(sanitizedDetails, currentUserRedactionOptions)
-    : null;
-  await db.insert(activityLog).values({
-    companyId: input.companyId,
-    actorType: input.actorType,
-    actorId: input.actorId,
-    action: input.action,
-    entityType: input.entityType,
-    entityId: input.entityId,
-    agentId: input.agentId ?? null,
-    runId: input.runId ?? null,
-    details: redactedDetails,
-  });
-
-  publishLiveEvent({
-    companyId: input.companyId,
-    type: "activity.logged",
-    payload: {
-      actorType: input.actorType,
-      actorId: input.actorId,
-      action: input.action,
-      entityType: input.entityType,
-      entityId: input.entityId,
-      agentId: input.agentId ?? null,
-      runId: input.runId ?? null,
-      details: redactedDetails,
+  return withPaperclipSpan(
+    "activity.log",
+    {
+      "paperclip.company_id": input.companyId,
+      "paperclip.action": input.action,
+      "paperclip.entity_type": input.entityType,
+      "paperclip.actor_type": input.actorType,
+      "paperclip.has_run": Boolean(input.runId),
+      "paperclip.has_agent": Boolean(input.agentId),
     },
-  });
-
-  const pluginEventType = eventTypeForActivityAction(input.action);
-  if (pluginEventType) {
-    const event: PluginEvent = {
-      eventId: randomUUID(),
-      eventType: pluginEventType,
-      occurredAt: new Date().toISOString(),
-      actorId: input.actorId,
-      actorType: input.actorType,
-      entityId: input.entityId,
-      entityType: input.entityType,
-      companyId: input.companyId,
-      payload: {
-        ...redactedDetails,
+    async (span) => {
+      const currentUserRedactionOptions = {
+        enabled: (await instanceSettingsService(db).getGeneral()).censorUsernameInLogs,
+      };
+      const sanitizedDetails = input.details ? sanitizeRecord(input.details) : null;
+      const redactedDetails = sanitizedDetails
+        ? redactCurrentUserValue(sanitizedDetails, currentUserRedactionOptions)
+        : null;
+      await db.insert(activityLog).values({
+        companyId: input.companyId,
+        actorType: input.actorType,
+        actorId: input.actorId,
+        action: input.action,
+        entityType: input.entityType,
+        entityId: input.entityId,
         agentId: input.agentId ?? null,
         runId: input.runId ?? null,
-      },
-    };
-    publishPluginDomainEvent(event);
-  }
+        details: redactedDetails,
+      });
+
+      publishLiveEvent({
+        companyId: input.companyId,
+        type: "activity.logged",
+        payload: {
+          actorType: input.actorType,
+          actorId: input.actorId,
+          action: input.action,
+          entityType: input.entityType,
+          entityId: input.entityId,
+          agentId: input.agentId ?? null,
+          runId: input.runId ?? null,
+          details: redactedDetails,
+        },
+      });
+
+      const pluginEventType = eventTypeForActivityAction(input.action);
+      span.setAttribute("paperclip.plugin_event_emitted", Boolean(pluginEventType));
+      if (pluginEventType) {
+        const event: PluginEvent = {
+          eventId: randomUUID(),
+          eventType: pluginEventType,
+          occurredAt: new Date().toISOString(),
+          actorId: input.actorId,
+          actorType: input.actorType,
+          entityId: input.entityId,
+          entityType: input.entityType,
+          companyId: input.companyId,
+          payload: {
+            ...redactedDetails,
+            agentId: input.agentId ?? null,
+            runId: input.runId ?? null,
+          },
+        };
+        publishPluginDomainEvent(event);
+      }
+    },
+  );
 }

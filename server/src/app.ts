@@ -64,6 +64,7 @@ import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 import { createCachedViteHtmlRenderer } from "./vite-html-renderer.js";
 import { DEFAULT_JSON_BODY_LIMIT, PORTABLE_JSON_BODY_LIMIT } from "./http/body-limits.js";
 import { COMPANY_IMPORT_API_PATH } from "./routes/company-import-paths.js";
+import { instrumentExpressRouterTree } from "./observability/method-tracing.js";
 
 type UiMode = "none" | "static" | "vite-dev";
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
@@ -425,6 +426,7 @@ export async function createApp(
   }
 
   app.use(errorHandler);
+  instrumentExpressRouterTree(app);
 
   jobCoordinator.start();
   scheduler.start();

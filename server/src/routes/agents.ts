@@ -8,6 +8,7 @@ import {
   agentSkillSyncSchema,
   agentMineInboxQuerySchema,
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  GOAL_STATUSES,
   createAgentKeySchema,
   createAgentHireSchema,
   createAgentSchema,
@@ -44,6 +45,7 @@ import {
   issueApprovalService,
   issueRecoveryActionService,
   issueService,
+  goalService,
   logActivity,
   syncInstructionsBundleConfigFromFilePath,
   workspaceOperationService,
@@ -1796,6 +1798,105 @@ export function agentRoutes(
       agentId: req.actor.agentId,
     });
     res.json(review);
+  });
+
+  router.get("/agents/me/goal-review", async (req, res) => {
+    if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.companyId) {
+      res.status(401).json({ error: "Agent authentication required" });
+      return;
+    }
+
+    const agent = await svc.getById(req.actor.agentId);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    if (agent.companyId !== req.actor.companyId) {
+      res.status(403).json({ error: "Agent company mismatch" });
+      return;
+    }
+    if (agent.role !== "ceo") {
+      res.status(403).json({ error: "CEO goal review requires a CEO agent" });
+      return;
+    }
+
+    const review = await goalExecutionService(db).listReviewForAgent({
+      companyId: req.actor.companyId,
+      agentId: req.actor.agentId,
+    });
+    res.json(review);
+  });
+
+  router.post("/agents/me/goal-review/verdicts", async (req, res) => {
+    if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.companyId) {
+      res.status(401).json({ error: "Agent authentication required" });
+      return;
+    }
+
+    const agent = await svc.getById(req.actor.agentId);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    if (agent.companyId !== req.actor.companyId) {
+      res.status(403).json({ error: "Agent company mismatch" });
+      return;
+    }
+    if (agent.role !== "ceo") {
+      res.status(403).json({ error: "CEO goal review requires a CEO agent" });
+      return;
+    }
+
+    const parsed = Array.isArray(req.body) ? req.body : req.body?.verdicts;
+    if (!Array.isArray(parsed)) {
+      res.status(400).json({ error: "Expected an array of verdicts or { verdicts: [...] }" });
+      return;
+    }
+
+    const allowedVerdicts = new Set(["done", "progressing", "stalled", "blocked"] as const);
+    const goalsSvc = goalService(db);
+    const results: Array<{ goalId: string; verdict: string; status: string; goalStatus?: string }> = [];
+
+    for (const entry of parsed) {
+      const goalId = typeof entry?.goalId === "string" ? entry.goalId : null;
+      const verdict = typeof entry?.verdict === "string" ? entry.verdict : null;
+      if (!goalId || !verdict || !allowedVerdicts.has(verdict as typeof allowedVerdicts extends Set<infer T> ? T : never)) {
+        res.status(400).json({ error: "Each verdict must include goalId and verdict (done|progressing|stalled|blocked)" });
+        return;
+      }
+
+      const goal = await goalsSvc.getById(goalId);
+      if (!goal || goal.companyId !== req.actor.companyId) {
+        res.status(404).json({ error: `Goal not found: ${goalId}` });
+        return;
+      }
+
+      if (verdict === "done") {
+        const updated = await goalsSvc.update(goalId, { status: "achieved" });
+        if (!updated || !GOAL_STATUSES.includes(updated.status)) {
+          res.status(500).json({ error: `Failed to update goal status for ${goalId}` });
+          return;
+        }
+
+        const actor = getActorInfo(req);
+        await logActivity(db, {
+          companyId: updated.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          action: "goal.updated",
+          entityType: "goal",
+          entityId: updated.id,
+          details: { status: "achieved", source: "goal_review_verdict", verdict },
+        });
+        results.push({ goalId, verdict, status: "updated", goalStatus: updated.status });
+        continue;
+      }
+
+      results.push({ goalId, verdict, status: "recorded" });
+    }
+
+    res.status(201).json({ verdicts: results });
   });
 
   router.get("/agents/me/inbox/mine", async (req, res) => {

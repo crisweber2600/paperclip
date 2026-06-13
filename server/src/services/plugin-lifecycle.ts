@@ -47,6 +47,7 @@ import { pluginLoader, type PluginLoader } from "./plugin-loader.js";
 import type { PluginWorkerManager, WorkerStartOptions } from "./plugin-worker-manager.js";
 import { badRequest, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
+import { withPaperclipSpan } from "../observability/tracing.js";
 
 // ---------------------------------------------------------------------------
 // Lifecycle state machine
@@ -350,33 +351,45 @@ export function pluginLifecycleManager(
     lastError: string | null = null,
     existingPlugin?: PluginRecord,
   ): Promise<PluginRecord> {
-    const plugin = existingPlugin ?? await requirePlugin(pluginId);
-    assertTransition(plugin, to);
+    return withPaperclipSpan(
+      "plugin.lifecycle.transition",
+      {
+        "paperclip.plugin_id": pluginId,
+        "paperclip.target_status": to,
+      },
+      async (span) => {
+        const plugin = existingPlugin ?? await requirePlugin(pluginId);
+        assertTransition(plugin, to);
 
-    const previousStatus = plugin.status;
+        const previousStatus = plugin.status;
+        span.setAttribute("paperclip.previous_status", previousStatus);
 
-    const updated = await registry.updateStatus(pluginId, {
-      status: to,
-      lastError,
-    });
+        const updated = await registry.updateStatus(pluginId, {
+          status: to,
+          lastError,
+        });
 
-    if (!updated) throw notFound(`Plugin not found after status update: ${pluginId}`);
-    const result = updated as PluginRecord;
+        if (!updated) throw notFound(`Plugin not found after status update: ${pluginId}`);
+        const result = updated as PluginRecord;
 
-    log.info(
-      { pluginId, pluginKey: result.pluginKey, from: previousStatus, to },
-      `plugin lifecycle: ${previousStatus} → ${to}`,
+        span.setAttribute("paperclip.plugin_key", result.pluginKey);
+
+        log.info(
+          { pluginId, pluginKey: result.pluginKey, from: previousStatus, to },
+          `plugin lifecycle: ${previousStatus} → ${to}`,
+        );
+
+        // Emit the generic status_changed event
+        emitter.emit("plugin.status_changed", {
+          pluginId,
+          pluginKey: result.pluginKey,
+          previousStatus,
+          newStatus: to,
+        });
+
+        return result;
+      },
     );
-
-    // Emit the generic status_changed event
-    emitter.emit("plugin.status_changed", {
-      pluginId,
-      pluginKey: result.pluginKey,
-      previousStatus,
-      newStatus: to,
-    });
-
-    return result;
   }
 
   function emitDomain(
@@ -464,18 +477,25 @@ export function pluginLifecycleManager(
      * @returns The updated plugin record.
      */
     async load(pluginId: string): Promise<PluginRecord> {
-      const result = await transition(pluginId, "ready");
-      await activateReadyPlugin(pluginId);
+      return withPaperclipSpan(
+        "plugin.lifecycle.load",
+        { "paperclip.plugin_id": pluginId },
+        async (span) => {
+          const result = await transition(pluginId, "ready");
+          await activateReadyPlugin(pluginId);
 
-      emitDomain("plugin.loaded", {
-        pluginId,
-        pluginKey: result.pluginKey,
-      });
-      emitDomain("plugin.enabled", {
-        pluginId,
-        pluginKey: result.pluginKey,
-      });
-      return result;
+          span.setAttribute("paperclip.plugin_key", result.pluginKey);
+          emitDomain("plugin.loaded", {
+            pluginId,
+            pluginKey: result.pluginKey,
+          });
+          emitDomain("plugin.enabled", {
+            pluginId,
+            pluginKey: result.pluginKey,
+          });
+          return result;
+        },
+      );
     },
 
     // -- enable -----------------------------------------------------------
@@ -489,46 +509,64 @@ export function pluginLifecycleManager(
      * @returns The updated plugin record.
      */
     async enable(pluginId: string): Promise<PluginRecord> {
-      const plugin = await requirePlugin(pluginId);
+      return withPaperclipSpan(
+        "plugin.lifecycle.enable",
+        { "paperclip.plugin_id": pluginId },
+        async (span) => {
+          const plugin = await requirePlugin(pluginId);
 
-      // Only allow enabling from disabled, error, or upgrade_pending states
-      if (plugin.status !== "disabled" && plugin.status !== "error" && plugin.status !== "upgrade_pending") {
-        throw badRequest(
-          `Cannot enable plugin in status '${plugin.status}'. ` +
-            `Plugin must be in 'disabled', 'error', or 'upgrade_pending' status to be enabled.`,
-        );
-      }
+          // Only allow enabling from disabled, error, or upgrade_pending states
+          if (plugin.status !== "disabled" && plugin.status !== "error" && plugin.status !== "upgrade_pending") {
+            throw badRequest(
+              `Cannot enable plugin in status '${plugin.status}'. ` +
+                `Plugin must be in 'disabled', 'error', or 'upgrade_pending' status to be enabled.`,
+            );
+          }
 
-      const result = await transition(pluginId, "ready", null, plugin);
-      await activateReadyPlugin(pluginId);
-      emitDomain("plugin.enabled", {
-        pluginId,
-        pluginKey: result.pluginKey,
-      });
-      return result;
+          span.setAttribute("paperclip.previous_status", plugin.status);
+          const result = await transition(pluginId, "ready", null, plugin);
+          await activateReadyPlugin(pluginId);
+          span.setAttribute("paperclip.plugin_key", result.pluginKey);
+          emitDomain("plugin.enabled", {
+            pluginId,
+            pluginKey: result.pluginKey,
+          });
+          return result;
+        },
+      );
     },
 
     // -- disable ----------------------------------------------------------
     async disable(pluginId: string, reason?: string): Promise<PluginRecord> {
-      const plugin = await requirePlugin(pluginId);
+      return withPaperclipSpan(
+        "plugin.lifecycle.disable",
+        {
+          "paperclip.plugin_id": pluginId,
+          "paperclip.has_reason": !!reason,
+        },
+        async (span) => {
+          const plugin = await requirePlugin(pluginId);
 
-      // Only allow disabling from ready state
-      if (plugin.status !== "ready") {
-        throw badRequest(
-          `Cannot disable plugin in status '${plugin.status}'. ` +
-            `Plugin must be in 'ready' status to be disabled.`,
-        );
-      }
+          // Only allow disabling from ready state
+          if (plugin.status !== "ready") {
+            throw badRequest(
+              `Cannot disable plugin in status '${plugin.status}'. ` +
+                `Plugin must be in 'ready' status to be disabled.`,
+            );
+          }
 
-      await deactivatePluginRuntime(pluginId, plugin.pluginKey);
+          span.setAttribute("paperclip.plugin_key", plugin.pluginKey);
+          await deactivatePluginRuntime(pluginId, plugin.pluginKey);
 
-      const result = await transition(pluginId, "disabled", reason ?? null, plugin);
-      emitDomain("plugin.disabled", {
-        pluginId,
-        pluginKey: result.pluginKey,
-        reason,
-      });
-      return result;
+          const result = await transition(pluginId, "disabled", reason ?? null, plugin);
+          emitDomain("plugin.disabled", {
+            pluginId,
+            pluginKey: result.pluginKey,
+            reason,
+          });
+          return result;
+        },
+      );
     },
 
     // -- unload -----------------------------------------------------------
@@ -536,72 +574,90 @@ export function pluginLifecycleManager(
       pluginId: string,
       removeData = false,
     ): Promise<PluginRecord | null> {
-      const plugin = await requirePlugin(pluginId);
+      return withPaperclipSpan(
+        "plugin.lifecycle.unload",
+        {
+          "paperclip.plugin_id": pluginId,
+          "paperclip.remove_data": removeData,
+        },
+        async (span) => {
+          const plugin = await requirePlugin(pluginId);
+          span.setAttribute("paperclip.plugin_key", plugin.pluginKey);
+          span.setAttribute("paperclip.previous_status", plugin.status);
 
-      // If already uninstalled and removeData, hard-delete
-      if (plugin.status === "uninstalled") {
-        if (removeData) {
+          // If already uninstalled and removeData, hard-delete
+          if (plugin.status === "uninstalled") {
+            if (removeData) {
+              await pluginLoaderInstance.cleanupInstallArtifacts(plugin);
+              const deleted = await registry.uninstall(pluginId, true);
+              log.info(
+                { pluginId, pluginKey: plugin.pluginKey },
+                "plugin lifecycle: hard-deleted already-uninstalled plugin",
+              );
+              emitDomain("plugin.unloaded", {
+                pluginId,
+                pluginKey: plugin.pluginKey,
+                removeData: true,
+              });
+              return deleted as PluginRecord | null;
+            }
+            throw badRequest(
+              `Plugin ${plugin.pluginKey} is already uninstalled. ` +
+                `Use removeData=true to permanently delete it.`,
+            );
+          }
+
+          await deactivatePluginRuntime(pluginId, plugin.pluginKey);
           await pluginLoaderInstance.cleanupInstallArtifacts(plugin);
-          const deleted = await registry.uninstall(pluginId, true);
+
+          // Perform the uninstall via registry (handles soft/hard delete)
+          const result = await registry.uninstall(pluginId, removeData);
+
           log.info(
-            { pluginId, pluginKey: plugin.pluginKey },
-            "plugin lifecycle: hard-deleted already-uninstalled plugin",
+            { pluginId, pluginKey: plugin.pluginKey, removeData },
+            `plugin lifecycle: ${plugin.status} → uninstalled${removeData ? " (hard delete)" : ""}`,
           );
+
+          emitter.emit("plugin.status_changed", {
+            pluginId,
+            pluginKey: plugin.pluginKey,
+            previousStatus: plugin.status,
+            newStatus: "uninstalled" as PluginStatus,
+          });
+
           emitDomain("plugin.unloaded", {
             pluginId,
             pluginKey: plugin.pluginKey,
-            removeData: true,
+            removeData,
           });
-          return deleted as PluginRecord | null;
-        }
-        throw badRequest(
-          `Plugin ${plugin.pluginKey} is already uninstalled. ` +
-            `Use removeData=true to permanently delete it.`,
-        );
-      }
 
-      await deactivatePluginRuntime(pluginId, plugin.pluginKey);
-      await pluginLoaderInstance.cleanupInstallArtifacts(plugin);
-
-      // Perform the uninstall via registry (handles soft/hard delete)
-      const result = await registry.uninstall(pluginId, removeData);
-
-      log.info(
-        { pluginId, pluginKey: plugin.pluginKey, removeData },
-        `plugin lifecycle: ${plugin.status} → uninstalled${removeData ? " (hard delete)" : ""}`,
+          return result as PluginRecord | null;
+        },
       );
-
-      emitter.emit("plugin.status_changed", {
-        pluginId,
-        pluginKey: plugin.pluginKey,
-        previousStatus: plugin.status,
-        newStatus: "uninstalled" as PluginStatus,
-      });
-
-      emitDomain("plugin.unloaded", {
-        pluginId,
-        pluginKey: plugin.pluginKey,
-        removeData,
-      });
-
-      return result as PluginRecord | null;
     },
 
     // -- markError --------------------------------------------------------
     async markError(pluginId: string, error: string): Promise<PluginRecord> {
-      // Stop the worker — the plugin is in an error state and should not
-      // continue running. The worker manager's auto-restart is disabled
-      // because we are intentionally taking the plugin offline.
-      const plugin = await requirePlugin(pluginId);
-      await deactivatePluginRuntime(pluginId, plugin.pluginKey);
+      return withPaperclipSpan(
+        "plugin.lifecycle.mark_error",
+        { "paperclip.plugin_id": pluginId },
+        async (span) => {
+          // Stop the worker — the plugin is in an error state and should not
+          // continue running. The worker manager's auto-restart is disabled
+          // because we are intentionally taking the plugin offline.
+          const plugin = await requirePlugin(pluginId);
+          span.setAttribute("paperclip.plugin_key", plugin.pluginKey);
+          await deactivatePluginRuntime(pluginId, plugin.pluginKey);
 
-      const result = await transition(pluginId, "error", error, plugin);
-      emitDomain("plugin.error", {
-        pluginId,
-        pluginKey: result.pluginKey,
-        error,
-      });
-      return result;
+          const result = await transition(pluginId, "error", error, plugin);
+          emitDomain("plugin.error", {
+            pluginId,
+            pluginKey: result.pluginKey,
+            error,
+          });
+          return result;
+        },
+      );
     },
 
     // -- markUpgradePending -----------------------------------------------

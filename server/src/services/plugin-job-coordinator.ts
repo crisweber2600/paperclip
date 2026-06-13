@@ -30,6 +30,7 @@ import type { PluginJobStore } from "./plugin-job-store.js";
 import { pluginRegistryService } from "./plugin-registry.js";
 import type { Db } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
+import { withPaperclipSpan } from "../observability/tracing.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -111,40 +112,46 @@ export function createPluginJobCoordinator(
    */
   async function onPluginLoaded(payload: { pluginId: string; pluginKey: string }): Promise<void> {
     const { pluginId, pluginKey } = payload;
-    log.info({ pluginId, pluginKey }, "plugin loaded — syncing jobs and registering with scheduler");
+    await withPaperclipSpan(
+      "plugin.job.loaded",
+      { "paperclip.plugin_id": pluginId },
+      async () => {
+        log.info({ pluginId, pluginKey }, "plugin loaded — syncing jobs and registering with scheduler");
 
-    try {
-      // Get the manifest from the registry
-      const plugin = await registry.getById(pluginId);
-      if (!plugin?.manifestJson) {
-        log.warn({ pluginId, pluginKey }, "plugin loaded but no manifest found — skipping job sync");
-        return;
-      }
+        try {
+          // Get the manifest from the registry
+          const plugin = await registry.getById(pluginId);
+          if (!plugin?.manifestJson) {
+            log.warn({ pluginId, pluginKey }, "plugin loaded but no manifest found — skipping job sync");
+            return;
+          }
 
-      // Sync job declarations from the manifest
-      const manifest = plugin.manifestJson;
-      const jobDeclarations = manifest.jobs ?? [];
+          // Sync job declarations from the manifest
+          const manifest = plugin.manifestJson;
+          const jobDeclarations = manifest.jobs ?? [];
 
-      if (jobDeclarations.length > 0) {
-        log.info(
-          { pluginId, pluginKey, jobCount: jobDeclarations.length },
-          "syncing job declarations from manifest",
-        );
-        await jobStore.syncJobDeclarations(pluginId, jobDeclarations);
-      }
+          if (jobDeclarations.length > 0) {
+            log.info(
+              { pluginId, pluginKey, jobCount: jobDeclarations.length },
+              "syncing job declarations from manifest",
+            );
+            await jobStore.syncJobDeclarations(pluginId, jobDeclarations);
+          }
 
-      // Register with the scheduler (computes nextRunAt for active jobs)
-      await scheduler.registerPlugin(pluginId);
-    } catch (err) {
-      log.error(
-        {
-          pluginId,
-          pluginKey,
-          err: err instanceof Error ? err.message : String(err),
-        },
-        "failed to sync jobs or register plugin with scheduler",
-      );
-    }
+          // Register with the scheduler (computes nextRunAt for active jobs)
+          await scheduler.registerPlugin(pluginId);
+        } catch (err) {
+          log.error(
+            {
+              pluginId,
+              pluginKey,
+              err: err instanceof Error ? err.message : String(err),
+            },
+            "failed to sync jobs or register plugin with scheduler",
+          );
+        }
+      },
+    );
   }
 
   /**

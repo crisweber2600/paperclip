@@ -39,6 +39,7 @@ import {
 } from "./plugin-tool-registry.js";
 import { pluginRegistryService } from "./plugin-registry.js";
 import { logger } from "../middleware/logger.js";
+import { withPaperclipSpan } from "../observability/tracing.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -250,29 +251,39 @@ export function createPluginToolDispatcher(
    * from the DB. No-ops gracefully if the plugin or manifest is missing.
    */
   async function registerFromDb(pluginId: string): Promise<void> {
-    if (!db) {
-      log.warn(
-        { pluginId },
-        "cannot register tools from DB — no database connection configured",
-      );
-      return;
-    }
+    await withPaperclipSpan(
+      "plugin.tools.register_from_db",
+      { "paperclip.plugin_id": pluginId },
+      async (span) => {
+        if (!db) {
+          log.warn(
+            { pluginId },
+            "cannot register tools from DB — no database connection configured",
+          );
+          span.setAttribute("paperclip.db_available", false);
+          return;
+        }
 
-    const pluginRegistry = pluginRegistryService(db);
-    const plugin = await pluginRegistry.getById(pluginId) as PluginRecord | null;
+        const pluginRegistry = pluginRegistryService(db);
+        const plugin = await pluginRegistry.getById(pluginId) as PluginRecord | null;
 
-    if (!plugin) {
-      log.warn({ pluginId }, "plugin not found in registry, cannot register tools");
-      return;
-    }
+        if (!plugin) {
+          log.warn({ pluginId }, "plugin not found in registry, cannot register tools");
+          span.setAttribute("paperclip.plugin_found", false);
+          return;
+        }
 
-    const manifest = plugin.manifestJson;
-    if (!manifest) {
-      log.warn({ pluginId }, "plugin has no manifest, cannot register tools");
-      return;
-    }
+        const manifest = plugin.manifestJson;
+        if (!manifest) {
+          log.warn({ pluginId }, "plugin has no manifest, cannot register tools");
+          span.setAttribute("paperclip.has_manifest", false);
+          return;
+        }
 
-    registry.registerPlugin(plugin.pluginKey, manifest, plugin.id);
+        registry.registerPlugin(plugin.pluginKey, manifest, plugin.id);
+        span.setAttribute("paperclip.tool_count", manifest.tools?.length ?? 0);
+      },
+    );
   }
 
   /**
@@ -305,13 +316,29 @@ export function createPluginToolDispatcher(
   }
 
   function handlePluginDisabled(payload: { pluginId: string; pluginKey: string; reason?: string }): void {
-    log.debug({ pluginId: payload.pluginId, pluginKey: payload.pluginKey }, "plugin disabled — unregistering tools");
-    registry.unregisterPlugin(payload.pluginKey);
+    void withPaperclipSpan(
+      "plugin.tools.handle_disabled",
+      { "paperclip.plugin_id": payload.pluginId },
+      async (span) => {
+        log.debug({ pluginId: payload.pluginId, pluginKey: payload.pluginKey }, "plugin disabled — unregistering tools");
+        span.setAttribute("paperclip.plugin_key", payload.pluginKey);
+        span.setAttribute("paperclip.has_reason", !!payload.reason);
+        registry.unregisterPlugin(payload.pluginKey);
+      },
+    );
   }
 
   function handlePluginUnloaded(payload: { pluginId: string; pluginKey: string; removeData: boolean }): void {
-    log.debug({ pluginId: payload.pluginId, pluginKey: payload.pluginKey }, "plugin unloaded — unregistering tools");
-    registry.unregisterPlugin(payload.pluginKey);
+    void withPaperclipSpan(
+      "plugin.tools.handle_unloaded",
+      { "paperclip.plugin_id": payload.pluginId },
+      async (span) => {
+        log.debug({ pluginId: payload.pluginId, pluginKey: payload.pluginKey }, "plugin unloaded — unregistering tools");
+        span.setAttribute("paperclip.plugin_key", payload.pluginKey);
+        span.setAttribute("paperclip.remove_data", payload.removeData);
+        registry.unregisterPlugin(payload.pluginKey);
+      },
+    );
   }
 
   // -----------------------------------------------------------------------
@@ -320,52 +347,61 @@ export function createPluginToolDispatcher(
 
   return {
     async initialize(): Promise<void> {
-      if (initialized) {
-        log.warn("dispatcher already initialized, skipping");
-        return;
-      }
-
-      log.info("initializing plugin tool dispatcher");
-
-      // Step 1: Load tools from all currently-ready plugins
-      if (db) {
-        const pluginRegistry = pluginRegistryService(db);
-        const readyPlugins = await pluginRegistry.listByStatus("ready") as PluginRecord[];
-
-        let totalTools = 0;
-        for (const plugin of readyPlugins) {
-          const manifest = plugin.manifestJson;
-          if (manifest?.tools && manifest.tools.length > 0) {
-            registry.registerPlugin(plugin.pluginKey, manifest, plugin.id);
-            totalTools += manifest.tools.length;
+      await withPaperclipSpan(
+        "plugin.tools.initialize",
+        { "paperclip.initialized": initialized },
+        async (span) => {
+          if (initialized) {
+            log.warn("dispatcher already initialized, skipping");
+            return;
           }
-        }
 
-        log.info(
-          { readyPlugins: readyPlugins.length, registeredTools: totalTools },
-          "loaded tools from ready plugins",
-        );
-      }
+          log.info("initializing plugin tool dispatcher");
 
-      // Step 2: Subscribe to lifecycle events for dynamic updates
-      if (lifecycleManager) {
-        enabledListener = handlePluginEnabled;
-        disabledListener = handlePluginDisabled;
-        unloadedListener = handlePluginUnloaded;
+          // Step 1: Load tools from all currently-ready plugins
+          if (db) {
+            const pluginRegistry = pluginRegistryService(db);
+            const readyPlugins = await pluginRegistry.listByStatus("ready") as PluginRecord[];
 
-        lifecycleManager.on("plugin.enabled", enabledListener);
-        lifecycleManager.on("plugin.disabled", disabledListener);
-        lifecycleManager.on("plugin.unloaded", unloadedListener);
+            let totalTools = 0;
+            for (const plugin of readyPlugins) {
+              const manifest = plugin.manifestJson;
+              if (manifest?.tools && manifest.tools.length > 0) {
+                registry.registerPlugin(plugin.pluginKey, manifest, plugin.id);
+                totalTools += manifest.tools.length;
+              }
+            }
 
-        log.debug("subscribed to lifecycle events");
-      } else {
-        log.warn("no lifecycle manager provided — tools will not auto-update on plugin state changes");
-      }
+            span.setAttribute("paperclip.ready_plugins", readyPlugins.length);
+            span.setAttribute("paperclip.registered_tools", totalTools);
+            log.info(
+              { readyPlugins: readyPlugins.length, registeredTools: totalTools },
+              "loaded tools from ready plugins",
+            );
+          }
 
-      initialized = true;
-      log.info(
-        { totalTools: registry.toolCount() },
-        "plugin tool dispatcher initialized",
+          // Step 2: Subscribe to lifecycle events for dynamic updates
+          if (lifecycleManager) {
+            enabledListener = handlePluginEnabled;
+            disabledListener = handlePluginDisabled;
+            unloadedListener = handlePluginUnloaded;
+
+            lifecycleManager.on("plugin.enabled", enabledListener);
+            lifecycleManager.on("plugin.disabled", disabledListener);
+            lifecycleManager.on("plugin.unloaded", unloadedListener);
+
+            log.debug("subscribed to lifecycle events");
+          } else {
+            log.warn("no lifecycle manager provided — tools will not auto-update on plugin state changes");
+          }
+
+          initialized = true;
+          span.setAttribute("paperclip.total_tools", registry.toolCount());
+          log.info(
+            { totalTools: registry.toolCount() },
+            "plugin tool dispatcher initialized",
+          );
+        },
       );
     },
 
@@ -404,32 +440,46 @@ export function createPluginToolDispatcher(
       parameters: unknown,
       runContext: ToolRunContext,
     ): Promise<ToolExecutionResult> {
-      log.debug(
+      return withPaperclipSpan(
+        "plugin.tools.execute",
         {
-          tool: namespacedName,
-          agentId: runContext.agentId,
-          runId: runContext.runId,
+          "paperclip.tool": namespacedName,
+          "paperclip.agent_id": runContext.agentId,
+          "paperclip.run_id": runContext.runId,
         },
-        "dispatching tool execution",
-      );
+        async (span) => {
+          log.debug(
+            {
+              tool: namespacedName,
+              agentId: runContext.agentId,
+              runId: runContext.runId,
+            },
+            "dispatching tool execution",
+          );
 
-      const result = await registry.executeTool(
-        namespacedName,
-        parameters,
-        runContext,
-      );
+          const result = await registry.executeTool(
+            namespacedName,
+            parameters,
+            runContext,
+          );
 
-      log.debug(
-        {
-          tool: namespacedName,
-          pluginId: result.pluginId,
-          hasContent: !!result.result.content,
-          hasError: !!result.result.error,
+          span.setAttribute("paperclip.plugin_id", result.pluginId);
+          span.setAttribute("paperclip.has_content", !!result.result.content);
+          span.setAttribute("paperclip.has_error", !!result.result.error);
+
+          log.debug(
+            {
+              tool: namespacedName,
+              pluginId: result.pluginId,
+              hasContent: !!result.result.content,
+              hasError: !!result.result.error,
+            },
+            "tool execution completed",
+          );
+
+          return result;
         },
-        "tool execution completed",
       );
-
-      return result;
     },
 
     registerPluginTools(

@@ -1,4 +1,5 @@
 /// <reference path="./types/express.d.ts" />
+import "./observability/open-telemetry-traces.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
@@ -941,6 +942,13 @@ export async function startServer(): Promise<StartedServer> {
         await shutdownOpenTelemetryLogs();
       } catch (err) {
         console.error("Failed to flush OpenTelemetry logs", err);
+      }
+
+      try {
+        const { shutdownOpenTelemetryTraces } = await import("./observability/open-telemetry-traces.js");
+        await shutdownOpenTelemetryTraces();
+      } catch (err) {
+        console.error("Failed to flush OpenTelemetry traces", err);
       }
 
       process.exit(0);
