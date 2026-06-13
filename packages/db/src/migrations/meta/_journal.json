@@ -698,8 +698,29 @@
     {
       "idx": 99,
       "version": "7",
+      "when": 1781130000000,
+      "tag": "0099_skills_store_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1781480000000,
+      "tag": "0100_skill_install_count_backfill",
+      "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1781490000000,
+      "tag": "0101_plugin_company_id_tenant_isolation",
+      "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
       "when": 1780534400000,
-      "tag": "0099_goal_verdicts_and_budgets",
+      "tag": "0102_goal_verdicts_and_budgets",
       "breakpoints": true
     }
   ]
